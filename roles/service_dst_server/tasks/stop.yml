@@ -1,0 +1,83 @@
+---
+# ENTRYPOINT: stop the cluster — every shard SAVES first — and prove each one exited cleanly.
+#
+#   dst_action=stop
+#
+# "Inactive" is not "saved". A shard that ignored c_shutdown(true) is SIGKILLed by podman at
+# --stop-timeout and goes inactive just the same, having lost everything since the last autosave.
+# So the gate below is on each shard's EXIT: dst-shard exits with the server's own status, 0 after
+# a clean save; a kill shows as a non-success Result or a non-zero ExecMainStatus.
+
+- name: Deployed?
+  ansible.builtin.include_tasks: _assert_deployed.yml
+
+- name: Read which shards are running before the stop
+  ansible.builtin.include_tasks: _unit_props.yml
+
+- name: Remember them
+  ansible.builtin.set_fact:
+    _dst_was_running: >-
+      {{ _dst_unit_props | dict2items | selectattr('value.ActiveState', 'equalto', 'active')
+         | map(attribute='key') | list }}
+
+- name: Stop the cluster target
+  # PartOf= propagates the stop to every shard — but `systemctl stop <target>` returns when the
+  # TARGET's own job is done, which is immediately, while the shards are still saving: right after
+  # it returns, the master can still be active and the caves deactivating.
+  # So this only enqueues the stop; the next task is what waits.
+  ansible.builtin.systemd_service:
+    name: "{{ _dst_target }}"
+    scope: user
+    state: stopped
+  register: _dst_stopped
+
+- name: Wait for every shard to finish saving and exit
+  # Stopping a unit that is already stopping joins its pending stop job and blocks until it is
+  # done — each within dst_stop_timeout (+ systemd's margin).
+  ansible.builtin.systemd_service:
+    name: "{{ shard.unit }}"
+    scope: user
+    state: stopped
+  loop: "{{ _dst_shards }}"
+  loop_control:
+    loop_var: shard
+    label: "{{ shard.unit }}"
+
+- name: Stop a prepare container that is still running
+  # An update (dst_action=update) or a start still preparing runs the <instance>-prepare
+  # container outside the shard units, so stopping the target does not reach it. A stop means
+  # every container of this instance stops. podman prints the name only when it stopped one.
+  ansible.builtin.command:
+    argv:
+      [
+        "{{ dst_podman }}",
+        stop,
+        --ignore,
+        --time,
+        "30",
+        "{{ _dst_prepare_container }}",
+      ]
+  register: _dst_stop_prepare
+  changed_when: _dst_stop_prepare.stdout | trim | length > 0
+
+- name: Read each shard's exit
+  ansible.builtin.include_tasks: _unit_props.yml
+
+- name: HARD GATE — every shard that was running exited cleanly
+  ansible.builtin.assert:
+    that:
+      - _dst_unit_props | dict2items | rejectattr('value.ActiveState', 'equalto', 'inactive') | list | length == 0
+      - >-
+        _dst_was_running | map('extract', _dst_unit_props) | rejectattr('Result', 'equalto', 'success')
+        | list | length == 0
+      - >-
+        _dst_was_running | map('extract', _dst_unit_props) | rejectattr('ExecMainStatus', 'equalto', '0')
+        | list | length == 0
+    fail_msg: >-
+      A shard did not stop cleanly — it may have been KILLED before saving (a SIGKILL at
+      dst_stop_timeout={{ dst_stop_timeout }}s). Was running: {{ _dst_was_running }}. Now:
+      {{ _dst_unit_props }}. Read `journalctl --user -u <unit>` and the shard's server_log.txt
+      before starting again; raise dst_stop_timeout if the save simply needed longer.
+    success_msg: >-
+      Stopped cleanly: {{ _dst_was_running | join(', ') if _dst_was_running else 'nothing was running' }}
+    quiet: true

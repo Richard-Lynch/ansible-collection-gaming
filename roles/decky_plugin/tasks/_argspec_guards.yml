@@ -1,0 +1,65 @@
+---
+# GENERATED from roles/decky_plugin/meta/argument_specs.py — DO NOT EDIT.
+# Regenerate with: venv/bin/python tools/argspec/cli.py x generate decky_plugin
+#
+# These are the constraints Ansible's role-argspec validator CANNOT enforce. It handles
+# type/required/choices/no_log, but has no numeric-range, length or pattern checking, so
+# without this file those declarations would be decorative.
+#
+# Include from the role's entrypoints:  - ansible.builtin.include_tasks: _argspec_guards.yml
+
+- name: "GUARD (generated) — decky_plugin_config_check must be matching '^([A-Za-z_][A-Za-z0-9_.]*:[A-Za-z_][A-Za-z0-9_]*)?$'"
+  ansible.builtin.assert:
+    that:
+      - "decky_plugin_config_check | default('') is match('^([A-Za-z_][A-Za-z0-9_.]*:[A-Za-z_][A-Za-z0-9_]*)?$')"
+    fail_msg: "decky_plugin_config_check violates a constraint declared in meta/argument_specs.py: must be matching '^([A-Za-z_][A-Za-z0-9_.]*:[A-Za-z_][A-Za-z0-9_]*)?$'. Got: {{ decky_plugin_config_check | default('(unset)') }}"
+    quiet: true
+  when: decky_plugin_config_check is defined
+
+- name: "GUARD (generated) — decky_plugin_directory must be matching '^[A-Za-z0-9._-]+$'"
+  ansible.builtin.assert:
+    that:
+      - "decky_plugin_directory | default('') is match('^[A-Za-z0-9._-]+$')"
+    fail_msg: "decky_plugin_directory violates a constraint declared in meta/argument_specs.py: must be matching '^[A-Za-z0-9._-]+$'. Got: {{ decky_plugin_directory | default('(unset)') }}"
+    quiet: true
+  when: decky_plugin_directory is defined
+
+- name: "GUARD (generated) — decky_plugin_name must be at least 1 long"
+  ansible.builtin.assert:
+    that:
+      - "decky_plugin_name | default('') | length >= 1"
+    fail_msg: "decky_plugin_name violates a constraint declared in meta/argument_specs.py: must be at least 1 long. Got: {{ decky_plugin_name | default('(unset)') }}"
+    quiet: true
+  when: decky_plugin_name is defined
+
+- name: "GUARD (generated) — decky_plugin_repo must be matching '^([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)?$'"
+  ansible.builtin.assert:
+    that:
+      - "decky_plugin_repo | default('') is match('^([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)?$')"
+    fail_msg: "decky_plugin_repo violates a constraint declared in meta/argument_specs.py: must be matching '^([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)?$'. Got: {{ decky_plugin_repo | default('(unset)') }}"
+    quiet: true
+  when: decky_plugin_repo is defined
+
+- name: "GUARD (generated) — decky_plugin_sha256 must be matching '^[0-9a-f]{64}$'"
+  ansible.builtin.assert:
+    that:
+      - "decky_plugin_sha256 | default('') is match('^[0-9a-f]{64}$')"
+    fail_msg: "decky_plugin_sha256 violates a constraint declared in meta/argument_specs.py: must be matching '^[0-9a-f]{64}$'. Got: {{ decky_plugin_sha256 | default('(unset)') }}"
+    quiet: true
+  when: decky_plugin_sha256 is defined
+
+- name: "GUARD (generated) — decky_plugin_verify_timeout must be >= 10"
+  ansible.builtin.assert:
+    that:
+      - "decky_plugin_verify_timeout | int >= 10"
+    fail_msg: "decky_plugin_verify_timeout violates a constraint declared in meta/argument_specs.py: must be >= 10. Got: {{ decky_plugin_verify_timeout | default('(unset)') }}"
+    quiet: true
+  when: decky_plugin_verify_timeout is defined
+
+- name: "GUARD (generated) — decky_plugin_version must be matching '^v\\d+\\.\\d+\\.\\d+$'"
+  ansible.builtin.assert:
+    that:
+      - "decky_plugin_version | default('') is match('^v\\d+\\.\\d+\\.\\d+$')"
+    fail_msg: "decky_plugin_version violates a constraint declared in meta/argument_specs.py: must be matching '^v\\d+\\.\\d+\\.\\d+$'. Got: {{ decky_plugin_version | default('(unset)') }}"
+    quiet: true
+  when: decky_plugin_version is defined

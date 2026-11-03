@@ -1,0 +1,17 @@
+---
+# Resolve the role's REAL variables, so verify.yml asserts against the role's own defaults
+# rather than a copy of them.
+- name: Converge
+  hosts: localhost
+  # Facts on: several of the role's defaults derive paths from ansible_env.HOME, which is the
+  # house rule (THE THIRD RULE) — a fact-free scenario fails resolving them and the failure reads
+  # as a broken role rather than a scenario that does not run it the way a play does.
+  gather_facts: true
+
+  tasks:
+    - name: Resolve the role's defaults
+      # The ROLE'S OWN file, not a re-derivation. Re-declaring these in the scenario would make
+      # the test a tautology that asserts the copy against itself (MOLMIRROR-02).
+      ansible.builtin.include_role:
+        name: steamdeck
+        tasks_from: setup_vars

@@ -1,0 +1,104 @@
+---
+# ENTRYPOINT: is the immutable rootfs intact, and what has been written into it? Writes nothing.
+#
+# WHY THIS MATTERS ON STEAMOS. The rootfs is replaced wholesale by atomic updates, so anything
+# written into it is discarded at the next OS update — silently, and the symptom appears later
+# as "the thing I installed has vanished". Worse, a rootfs left writable is easy to create and
+# invisible afterwards: nothing warns you, and the next update quietly throws the changes away.
+#
+# WHAT THIS ANSWERS, which a bare `steamos-readonly status` does not:
+#   * is it sealed NOW, and was it left unsealed by something?
+#   * what has actually been written into it — pacman installs are the usual culprit
+#   * how much space is left, since an atomic update needs room to stage
+#
+# A NOTE ON /.ROOTFS_RW. `steamos-readonly disable` drops this marker file. It is NOT proof that
+# the rootfs is currently writable — the flag is re-sealed independently, and the marker is
+# simply left behind. Its TIMESTAMP is the useful part: it says when something last unsealed the
+# filesystem, which is what attributes the change.
+
+- name: Apply role defaults
+  ansible.builtin.include_tasks: setup_vars.yml
+
+- name: Gather the rootfs state
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -o pipefail
+      printf 'readonly_flag=%s\n' "$(steamos-readonly status 2>/dev/null)"
+      printf 'mount_now=%s\n' "$(findmnt -no OPTIONS / | cut -d, -f1)"
+      if [ -f /.ROOTFS_RW ]; then
+        printf 'rw_marker=%s\n' "$(stat -c %y /.ROOTFS_RW | cut -c1-19)"
+      else
+        printf 'rw_marker=absent\n'
+      fi
+      # Space matters: an atomic update needs room to stage the new image.
+      df -h / | tail -1 | awk '{printf "root_size=%s root_used=%s root_free=%s root_pct=%s\n", $2, $3, $4, $5}'
+      # Packages installed here are destroyed by the next update, together with the pacman DB
+      # that records them — so this is the list of things that will silently disappear.
+      if [ -f /var/log/pacman.log ]; then
+        printf 'pacman_installs=%s\n' "$(grep -cE '\[ALPM\] installed' /var/log/pacman.log 2>/dev/null || echo 0)"
+        printf 'pacman_last=%s\n' "$(grep -E '\[ALPM\] installed' /var/log/pacman.log 2>/dev/null | tail -1 | cut -c2-17 || echo none)"
+      else
+        printf 'pacman_installs=nolog\n'
+      fi
+      printf 'pacman_explicit=%s\n' "$(pacman -Qe 2>/dev/null | wc -l | tr -d ' ')"
+      # Our own units, so the report distinguishes what this repo put there from what it did not.
+      printf 'iaac_units=%s\n' "$(ls /etc/systemd/system/iaac-*.service 2>/dev/null | wc -l | tr -d ' ')"
+      printf 'etc_overlay=%s\n' "$(findmnt -no SOURCE /etc 2>/dev/null)"
+      # Emitted as key=value and parsed into a dict below rather than regex-searched in Jinja:
+      # a backslash escape inside a folded YAML scalar is not the escape you wrote.
+  register: _sd_rootfs
+  changed_when: false
+  check_mode: false # a read: under --check the report must still have something to parse
+
+- name: Parse the state into a dict
+  ansible.builtin.set_fact:
+    _sd_rf: >-
+      {{ dict(_sd_rootfs.stdout_lines | select('search', '=')
+              | map('split', '=', 1) | list) }}
+
+- name: Report
+  ansible.builtin.debug:
+    msg: "{{ _report.splitlines() }}"
+  vars:
+    _sealed: "{{ _sd_rf.readonly_flag | default('') == 'enabled' }}"
+    _report: |
+      ===== ROOTFS =====
+      {{ _sd_rootfs.stdout }}
+
+      {{ 'SEALED — the read-only flag is set, which is the state SteamOS expects.'
+         if _sealed
+         else 'NOT SEALED. Anything written to / will be discarded by the next atomic update,
+      silently. Re-seal with `steamos-readonly enable`.' }}
+
+      {{ 'The mount still reads rw because steamos-readonly sets the flag that applies at BOOT
+      and does not remount — this is expected after a re-seal, not a fault.'
+         if (_sealed and _sd_rf.mount_now | default('') == 'rw') else '' }}
+
+      ===== WHAT WOULD BE LOST ON AN OS UPDATE =====
+      {{ ('Packages installed via pacman: ' ~ _sd_rf.pacman_installs ~
+          ' — these, and the pacman database recording them, are destroyed by the next update.')
+         if _sd_rf.pacman_installs | default('0') not in ['0', 'nolog'] else
+         'No pacman installs recorded — nothing was hand-installed into the rootfs.' }}
+
+      /etc is an OVERLAY on {{ _sd_rf.etc_overlay | default('?') }},
+      backed by the var partition, which SteamOS syncs across updates — so units under
+      /etc/systemd/system survive where rootfs changes do not.
+      This repo owns {{ _sd_rf.iaac_units | default('0') }} unit(s) there.
+
+- name: Warn if the rootfs is unsealed or short of space
+  # Reported, not asserted: this is a read-only survey, and failing it would make the play
+  # unusable exactly when someone is trying to diagnose the problem it describes.
+  ansible.builtin.debug:
+    msg: "{{ _warnings }}"
+  vars:
+    # Cast again at the point of USE: a var defined with {{ }} is re-templated to a STRING when
+    # another var references it, so the | int here does not survive into the comparison below.
+    _pct: "{{ (_sd_rf.root_pct | default('0%') | replace('%', '')) | int }}"
+    _warnings: >-
+      {{ ([]
+          + (['ROOTFS IS UNSEALED — changes will be discarded by the next OS update']
+             if _sd_rf.readonly_flag | default('') != 'enabled' else [])
+          + (['ROOT FILESYSTEM ' ~ _pct ~ '% FULL — an atomic update needs room to stage the new image']
+             if (_pct | int) >= 85 else [])
+         ) | default(['nothing to flag'], true) }}

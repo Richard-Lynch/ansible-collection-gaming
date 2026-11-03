@@ -1,0 +1,90 @@
+---
+# Switch declared DST client mods on (or off) in the game's own mod state, on one device.
+
+- name: Resolve declared options over their generated defaults
+  ansible.builtin.include_tasks: _resolve_defaults.yml
+
+- name: Derive the home directory
+  # From the connecting user's facts (THE THIRD RULE), unless a test points it at a fixture.
+  ansible.builtin.set_fact:
+    _kdc_home: "{{ klei_dst_client_home if klei_dst_client_home | length > 0 else ansible_env.HOME }}"
+
+- name: Find the game's client mod state
+  # TWO homes, and checking only one makes a played client look "never launched":
+  # the native Linux build keeps ~/.klei/DoNotStarveTogether; the Windows build under Proton (the
+  # Steam Deck) keeps it inside the prefix. One modindex per Steam account folder.
+  ansible.builtin.find:
+    paths:
+      - "{{ _kdc_home }}/.klei/DoNotStarveTogether"
+      - "{{ _kdc_home }}/.local/share/Steam/steamapps/compatdata/322330/pfx/drive_c/users/steamuser/Documents/Klei/DoNotStarveTogether"
+    patterns: modindex
+    recurse: true
+    depth: 3
+  register: _kdc_found
+
+- name: Find which Workshop mods this device has downloaded
+  ansible.builtin.find:
+    paths: "{{ _kdc_home }}/.local/share/Steam/steamapps/workshop/content/322330"
+    file_type: directory
+  register: _kdc_downloaded
+
+- name: Is the game running?
+  # ONE pattern (PGREPMULTI-01). Matches the native binary and the Proton .exe alike.
+  ansible.builtin.command:
+    argv: [pgrep, -f, -i, dontstarve]
+  register: _kdc_running
+  changed_when: false
+  failed_when: _kdc_running.rc not in [0, 1]
+
+- name: Report what was found
+  ansible.builtin.debug:
+    msg:
+      - "modindex files: {{ _kdc_found.files | map(attribute='path') | list if _kdc_found.files else 'NONE — DST has not been launched on this device' }}"
+      - >-
+        declared mods NOT downloaded here yet (subscribe them — roles/steam_workshop — and Steam
+        fetches them): {{ klei_dst_client_mods | map(attribute='id') | map('string')
+        | difference(_kdc_downloaded.files | map(attribute='path') | map('basename') | list) | list }}
+      - "game running: {{ _kdc_running.rc == 0 }}"
+
+- name: Nothing to do on a device that has never run the game
+  ansible.builtin.meta: end_host
+  when: _kdc_found.files | length == 0
+
+- name: HARD GATE — the game must be closed to apply
+  # The game rewrites modindex when it exits, so an edit made while it runs is silently lost and
+  # the run would report success for a change that does not survive.
+  ansible.builtin.assert:
+    that: [_kdc_running.rc == 1]
+    fail_msg: Close Don't Starve Together on this device first — it overwrites the mod state on exit.
+    quiet: true
+  when: klei_dst_client_apply | bool
+
+- name: Build the editor's instructions
+  # Built HERE, not inline in the command: a multi-line expression inside a folded (>-) scalar
+  # keeps the newlines of its more-indented lines, which split the command and ran `--apply` as
+  # a separate shell command — caught by this role's molecule scenario, where the run silently
+  # previewed instead of writing.
+  ansible.builtin.set_fact:
+    _kdc_wanted:
+      enable: >-
+        {{ klei_dst_client_mods | selectattr('enabled', 'undefined') | map(attribute='id') | list
+           + klei_dst_client_mods | selectattr('enabled', 'defined') | selectattr('enabled') | map(attribute='id') | list }}
+      disable: >-
+        {{ klei_dst_client_mods | selectattr('enabled', 'defined') | rejectattr('enabled') | map(attribute='id') | list }}
+
+- name: Plan (and with klei_dst_client_apply, write) each modindex
+  ansible.builtin.script:
+    cmd: "dst_modindex.py {{ item.path | quote }} {{ _kdc_wanted | to_json | quote }}{{ ' --apply' if klei_dst_client_apply | bool else '' }}"
+    executable: "{{ klei_dst_client_python }}"
+  loop: "{{ _kdc_found.files }}"
+  loop_control:
+    label: "{{ item.path }}"
+  register: _kdc_runs
+  # Inside a loop, the register name refers to THIS item's result.
+  changed_when: (_kdc_runs.stdout | from_json).applied | default(false)
+
+- name: Report
+  ansible.builtin.debug:
+    msg: >-
+      {{ _kdc_runs.results | map(attribute='stdout') | map('from_json') | list }}
+      — {{ 'APPLIED' if klei_dst_client_apply | bool else 'PLAN only; set klei_dst_client_apply=true' }}

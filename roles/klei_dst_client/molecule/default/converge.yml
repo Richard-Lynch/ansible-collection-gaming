@@ -1,0 +1,151 @@
+# Converges the REAL role on localhost against a fixture home: a Proton-style DST client save
+# holding a modindex as a real client writes it (no secrets in it), then the
+# role's apply — so the find paths, the game-running gate and the editor are exercised together.
+# The codec and editor themselves are pinned by files/test_dst_modindex.py, run here too.
+---
+- name: Converge
+  hosts: localhost
+  gather_facts: true
+  vars:
+    _home: /tmp/molecule-klei-dst-client
+    _save: /tmp/molecule-klei-dst-client/.local/share/Steam/steamapps/compatdata/322330/pfx/drive_c/users/steamuser/Documents/Klei/DoNotStarveTogether/1/client_save
+  tasks:
+    - name: Run the codec/editor suite
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/../../files/test_dst_modindex.py"]
+      changed_when: false
+
+    - name: Create the fixture client save
+      ansible.builtin.file:
+        path: "{{ _save }}"
+        state: directory
+        mode: "0755"
+
+    - name: Write the fixture modindex (first converge only — idempotence must see it applied)
+      ansible.builtin.copy:
+        dest: "{{ _save }}/modindex"
+        content: >-
+          KLEI     1DAQAAABAAAABPAAAAUAAAAHjaLcjBDYAgDAXQVRzAgw7ALE2Vr2nEQlqEA3F3L77jM9THdBpRnLcE8oJdOBEatFJnU9EzHJwc86W5K3ERajCXrGFd/rxz9DDe9wP1Rh+A
+        mode: "0644"
+        force: false
+
+    - name: Apply the role against the fixture home
+      ansible.builtin.include_role:
+        name: klei_dst_client
+      vars:
+        klei_dst_client_home: "{{ _home }}"
+        klei_dst_client_apply: true
+        klei_dst_client_mods:
+          - { id: "376333686", name: Combined Status }
+          - { id: "351325790", name: Geometric Placement }
+
+    # ---------------------------------------------------------------- cluster_token entrypoint
+    - name: Write a fixture cluster token (a made-up value, padded with the newline the game writes)
+      ansible.builtin.copy:
+        dest: "{{ _save | dirname | dirname }}/cluster_token.txt"
+        content: "pds-g^KU_molecule^fixture-token-value=\n"
+        mode: "0600"
+
+    - name: Read it with the role
+      ansible.builtin.include_role:
+        name: klei_dst_client
+        tasks_from: cluster_token
+        defaults_from: cluster_token
+      vars:
+        klei_dst_client_home: "{{ _home }}"
+
+    - name: The role returned the trimmed token
+      ansible.builtin.assert:
+        that:
+          [
+            klei_dst_client_cluster_token == 'pds-g^KU_molecule^fixture-token-value=',
+          ]
+        quiet: true
+
+    - name: A home with no token must FAIL, not return an empty token
+      block:
+        - name: Read from an empty home
+          ansible.builtin.include_role:
+            name: klei_dst_client
+            tasks_from: cluster_token
+            defaults_from: cluster_token
+          vars:
+            klei_dst_client_home: /tmp/molecule-klei-dst-client-empty
+        - name: Not reached when the gate works
+          ansible.builtin.set_fact:
+            _kdc_no_token_passed: true
+      rescue:
+        - name: The gate fired
+          ansible.builtin.set_fact:
+            _kdc_no_token_refused: true
+
+    # Its OWN home: in the shared one this newer file would be picked by the FIRST read on the
+    # idempotence run, which is the role working and the test being wrong.
+    - name: Create the fixture download directory (the site's zip, unzipped)
+      ansible.builtin.file:
+        path: /tmp/molecule-klei-dst-client-dl/Downloads/MyDediServer/Cluster_1
+        state: directory
+        mode: "0755"
+
+    - name: A token downloaded from accounts.klei.com into ~/Downloads is found
+      ansible.builtin.copy:
+        dest: /tmp/molecule-klei-dst-client-dl/Downloads/MyDediServer/Cluster_1/cluster_token.txt
+        content: "pds-g^KU_molecule^downloaded-token-value=\n"
+        mode: "0600"
+
+    - name: Read again
+      ansible.builtin.include_role:
+        name: klei_dst_client
+        tasks_from: cluster_token
+        defaults_from: cluster_token
+      vars:
+        klei_dst_client_home: /tmp/molecule-klei-dst-client-dl
+
+    - name: The downloaded token was read
+      ansible.builtin.assert:
+        that:
+          [
+            klei_dst_client_cluster_token == 'pds-g^KU_molecule^downloaded-token-value=',
+          ]
+        quiet: true
+
+    - name: Assert the empty home was refused
+      ansible.builtin.assert:
+        that:
+          - _kdc_no_token_refused | default(false)
+          - not (_kdc_no_token_passed | default(false))
+        quiet: true
+
+    # ------------------------------------------------------------------- reset_crash_marker
+    # The marker a mid-load close leaves, then the reset. A second marker already at "done" must be
+    # left byte-identical (the near miss: only "loading" is rewritten).
+    - name: The crash marker a mid-load close leaves (the exact bytes the game writes)
+      ansible.builtin.copy:
+        dest: "{{ _save }}/boot_modindex"
+        content: "KLEI     1 loading"
+        mode: "0644"
+      # It DOES change the file every converge, by design — so it is excluded from the
+      # idempotence pass rather than told to report "unchanged".
+      tags: [molecule-idempotence-notest]
+
+    - name: A second account's save directory exists for it
+      ansible.builtin.file:
+        path: "{{ _save | dirname | dirname }}/11111111/client_save"
+        state: directory
+        mode: "0755"
+
+    - name: A second account's marker, already "done"
+      ansible.builtin.copy:
+        dest: "{{ _save | dirname | dirname }}/11111111/client_save/boot_modindex"
+        content: "KLEI     1 done"
+        mode: "0644"
+        force: false
+
+    - name: Reset the marker
+      tags: [molecule-idempotence-notest]
+      ansible.builtin.include_role:
+        name: klei_dst_client
+        tasks_from: reset_crash_marker
+        defaults_from: reset_crash_marker
+      vars:
+        klei_dst_client_home: "{{ _home }}"

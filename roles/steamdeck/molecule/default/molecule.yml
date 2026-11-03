@@ -1,0 +1,35 @@
+# Offline scenario — exercises the role's REAL variable resolution and its pure logic with no
+# Steam Deck, no Steam and no network. Every task runs against fixtures on localhost.
+#
+# WHAT THIS TESTS, and why. The role's riskiest pure logic is the SIGNED/UNSIGNED APPID
+# round-trip: Steam stores a shortcut's appid as a signed int32 in shortcuts.vdf, but names
+# artwork files with the UNSIGNED form. The conversion exists TWICE — once in Jinja
+# (tasks/artwork.yml) and once in Python (files/steam_shortcuts_merge.py) — and if the two ever
+# disagree, artwork silently lands under an appid nothing references and every tile goes blank
+# with no error anywhere. That is exactly the shape this repo's rules exist to catch, and it is
+# unverifiable by looking at either implementation alone.
+---
+dependency:
+  name: galaxy
+driver:
+  name: default
+platforms:
+  - name: localhost
+provisioner:
+  name: ansible
+  # Molecule runs from the scenario directory, so the repo's ansible.cfg roles_path (./roles) does
+  # not resolve. Pointed at the repo root explicitly so converge.yml can include the role's REAL
+  # setup_vars.yml — re-deriving the refspec in the scenario would make this a tautology that
+  # tests the copy against itself (MOLMIRROR-02).
+  env:
+    ANSIBLE_ROLES_PATH: "${MOLECULE_PROJECT_DIRECTORY}/../"
+    ANSIBLE_COLLECTIONS_PATH: "${MOLECULE_PROJECT_DIRECTORY}/../../collections.galaxy:${MOLECULE_PROJECT_DIRECTORY}/../../../../.."
+  inventory:
+    host_vars:
+      localhost:
+        ansible_connection: local
+  playbooks:
+    converge: converge.yml
+    verify: verify.yml
+verifier:
+  name: ansible

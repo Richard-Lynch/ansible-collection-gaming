@@ -1,0 +1,126 @@
+---
+# GENERATED from roles/service_dst_server/meta/argument_specs.py — DO NOT EDIT.
+# Regenerate with: venv/bin/python tools/argspec/cli.py x generate service_dst_server
+#
+# These are the constraints Ansible's role-argspec validator CANNOT enforce. It handles
+# type/required/choices/no_log, but has no numeric-range, length or pattern checking, so
+# without this file those declarations would be decorative.
+#
+# Include from the role's entrypoints:  - ansible.builtin.include_tasks: _argspec_guards.yml
+
+- name: "GUARD (generated) — dst_backup_keep must be >= 1"
+  ansible.builtin.assert:
+    that:
+      - "dst_backup_keep | int >= 1"
+    fail_msg: "dst_backup_keep violates a constraint declared in meta/argument_specs.py: must be >= 1. Got: {{ dst_backup_keep | default('(unset)') }}"
+    quiet: true
+  when: dst_backup_keep is defined
+
+- name: "GUARD (generated) — dst_cluster_dir_name must be matching '^[A-Za-z0-9_-]+$'"
+  ansible.builtin.assert:
+    that:
+      - "dst_cluster_dir_name | default('') is match('^[A-Za-z0-9_-]+$')"
+    fail_msg: "dst_cluster_dir_name violates a constraint declared in meta/argument_specs.py: must be matching '^[A-Za-z0-9_-]+$'. Got: {{ dst_cluster_dir_name | default('(unset)') }}"
+    quiet: true
+  when: dst_cluster_dir_name is defined
+
+- name: "GUARD (generated) — dst_cluster_name must be at least 1 long"
+  ansible.builtin.assert:
+    that:
+      - "dst_cluster_name | default('') | length >= 1"
+    fail_msg: "dst_cluster_name violates a constraint declared in meta/argument_specs.py: must be at least 1 long. Got: {{ dst_cluster_name | default('(unset)') }}"
+    quiet: true
+  when: dst_cluster_name is defined
+
+- name: "GUARD (generated) — dst_control_interval must be >= 10"
+  ansible.builtin.assert:
+    that:
+      - "dst_control_interval | int >= 10"
+    fail_msg: "dst_control_interval violates a constraint declared in meta/argument_specs.py: must be >= 10. Got: {{ dst_control_interval | default('(unset)') }}"
+    quiet: true
+  when: dst_control_interval is defined
+
+- name: "GUARD (generated) — dst_control_port must be >= 1025; <= 65535"
+  ansible.builtin.assert:
+    that:
+      - "dst_control_port | int >= 1025"
+      - "dst_control_port | int <= 65535"
+    fail_msg: "dst_control_port violates a constraint declared in meta/argument_specs.py: must be >= 1025; <= 65535. Got: {{ dst_control_port | default('(unset)') }}"
+    quiet: true
+  when: dst_control_port is defined
+
+- name: "GUARD (generated) — dst_idle_shutdown_minutes must be >= 0"
+  ansible.builtin.assert:
+    that:
+      - "dst_idle_shutdown_minutes | int >= 0"
+    fail_msg: "dst_idle_shutdown_minutes violates a constraint declared in meta/argument_specs.py: must be >= 0. Got: {{ dst_idle_shutdown_minutes | default('(unset)') }}"
+    quiet: true
+  when: dst_idle_shutdown_minutes is defined
+
+- name: "GUARD (generated) — dst_idle_startup_grace_minutes must be >= 0"
+  ansible.builtin.assert:
+    that:
+      - "dst_idle_startup_grace_minutes | int >= 0"
+    fail_msg: "dst_idle_startup_grace_minutes violates a constraint declared in meta/argument_specs.py: must be >= 0. Got: {{ dst_idle_startup_grace_minutes | default('(unset)') }}"
+    quiet: true
+  when: dst_idle_startup_grace_minutes is defined
+
+- name: "GUARD (generated) — dst_instance must be matching '^[a-z][a-z0-9-]{0,30}$'"
+  ansible.builtin.assert:
+    that:
+      - "dst_instance | default('') is match('^[a-z][a-z0-9-]{0,30}$')"
+    fail_msg: "dst_instance violates a constraint declared in meta/argument_specs.py: must be matching '^[a-z][a-z0-9-]{0,30}$'. Got: {{ dst_instance | default('(unset)') }}"
+    quiet: true
+  when: dst_instance is defined
+
+- name: "GUARD (generated) — dst_max_players must be >= 1; <= 64"
+  ansible.builtin.assert:
+    that:
+      - "dst_max_players | int >= 1"
+      - "dst_max_players | int <= 64"
+    fail_msg: "dst_max_players violates a constraint declared in meta/argument_specs.py: must be >= 1; <= 64. Got: {{ dst_max_players | default('(unset)') }}"
+    quiet: true
+  when: dst_max_players is defined
+
+- name: "GUARD (generated) — dst_max_snapshots must be >= 1; <= 100"
+  ansible.builtin.assert:
+    that:
+      - "dst_max_snapshots | int >= 1"
+      - "dst_max_snapshots | int <= 100"
+    fail_msg: "dst_max_snapshots violates a constraint declared in meta/argument_specs.py: must be >= 1; <= 100. Got: {{ dst_max_snapshots | default('(unset)') }}"
+    quiet: true
+  when: dst_max_snapshots is defined
+
+- name: "GUARD (generated) — dst_start_timeout must be >= 60"
+  ansible.builtin.assert:
+    that:
+      - "dst_start_timeout | int >= 60"
+    fail_msg: "dst_start_timeout violates a constraint declared in meta/argument_specs.py: must be >= 60. Got: {{ dst_start_timeout | default('(unset)') }}"
+    quiet: true
+  when: dst_start_timeout is defined
+
+- name: "GUARD (generated) — dst_steamcmd_retries must be >= 1; <= 10"
+  ansible.builtin.assert:
+    that:
+      - "dst_steamcmd_retries | int >= 1"
+      - "dst_steamcmd_retries | int <= 10"
+    fail_msg: "dst_steamcmd_retries violates a constraint declared in meta/argument_specs.py: must be >= 1; <= 10. Got: {{ dst_steamcmd_retries | default('(unset)') }}"
+    quiet: true
+  when: dst_steamcmd_retries is defined
+
+- name: "GUARD (generated) — dst_stop_timeout must be >= 10"
+  ansible.builtin.assert:
+    that:
+      - "dst_stop_timeout | int >= 10"
+    fail_msg: "dst_stop_timeout violates a constraint declared in meta/argument_specs.py: must be >= 10. Got: {{ dst_stop_timeout | default('(unset)') }}"
+    quiet: true
+  when: dst_stop_timeout is defined
+
+- name: "GUARD (generated) — dst_whitelist_slots must be >= 0; <= 64"
+  ansible.builtin.assert:
+    that:
+      - "dst_whitelist_slots | int >= 0"
+      - "dst_whitelist_slots | int <= 64"
+    fail_msg: "dst_whitelist_slots violates a constraint declared in meta/argument_specs.py: must be >= 0; <= 64. Got: {{ dst_whitelist_slots | default('(unset)') }}"
+    quiet: true
+  when: dst_whitelist_slots is defined

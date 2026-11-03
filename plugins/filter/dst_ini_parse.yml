@@ -1,0 +1,22 @@
+# Copyright: (c) 2026, Richard Lynch
+# GNU General Public License v3.0+ (see https://www.gnu.org/licenses/gpl-3.0.txt)
+---
+DOCUMENTATION:
+  name: dst_ini_parse
+  short_description: Parse INI text into sections, ignoring layout
+  author: Richard Lynch (@Richard-Lynch)
+  description:
+    - "Returns C({SECTION: {key: value-as-text}}), ignoring comments, blank lines and spacing, so two files that differ only in layout compare equal."
+  options:
+    _input:
+      description: "The INI file text."
+      type: str
+      required: true
+EXAMPLES: |
+  - name: Use dst_ini_parse
+    ansible.builtin.debug:
+      msg: "{{ (old_text | richard_lynch.gaming.dst_ini_parse) != (new_text | richard_lynch.gaming.dst_ini_parse) }}"
+RETURN:
+  _value:
+    description: "The parsed sections."
+    type: dict

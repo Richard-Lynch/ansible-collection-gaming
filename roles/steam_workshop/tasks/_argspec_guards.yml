@@ -1,0 +1,17 @@
+---
+# GENERATED from roles/steam_workshop/meta/argument_specs.py — DO NOT EDIT.
+# Regenerate with: venv/bin/python tools/argspec/cli.py x generate steam_workshop
+#
+# These are the constraints Ansible's role-argspec validator CANNOT enforce. It handles
+# type/required/choices/no_log, but has no numeric-range, length or pattern checking, so
+# without this file those declarations would be decorative.
+#
+# Include from the role's entrypoints:  - ansible.builtin.include_tasks: _argspec_guards.yml
+
+- name: "GUARD (generated) — steam_workshop_steamid must be matching '^7656119\\d{10}$'"
+  ansible.builtin.assert:
+    that:
+      - "steam_workshop_steamid | default('') is match('^7656119\\d{10}$')"
+    fail_msg: "steam_workshop_steamid violates a constraint declared in meta/argument_specs.py: must be matching '^7656119\\d{10}$'. Got: {{ steam_workshop_steamid | default('(unset)') }}"
+    quiet: true
+  when: steam_workshop_steamid is defined

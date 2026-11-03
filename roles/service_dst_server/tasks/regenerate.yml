@@ -1,0 +1,87 @@
+---
+# ENTRYPOINT: discard the current WORLD so the next start generates a fresh one from the declared
+# world settings. The cluster's configuration is untouched.
+#
+#   dst_action=regenerate dst_regenerate_confirm=Cluster_1
+#
+# WHY. World-generation settings (worldgen_preset, worldgen_overrides, leveldata_override) are
+# read only when a shard's world is GENERATED; on an existing save they do nothing. This is the
+# way to make them apply. (In game, c_regenerateworld() does the same while running.)
+#
+# NOTHING IS DELETED. Each shard's save/ is MOVED to <dst_root>/discarded/<timestamp>/<shard>/ —
+# outside the cluster, so it is not swept into every later backup — and a backup of the whole
+# cluster is taken first. Typing the cluster directory name is the confirmation.
+
+- name: Deployed?
+  ansible.builtin.include_tasks: _assert_deployed.yml
+
+- name: Observe the cluster
+  ansible.builtin.include_tasks: _observe.yml
+
+- name: HARD GATE — confirmed by cluster name, and stopped
+  ansible.builtin.assert:
+    that:
+      - dst_regenerate_confirm == dst_cluster_dir_name
+      - _dst_obs.state == 'stopped'
+    fail_msg: >-
+      Set dst_regenerate_confirm={{ dst_cluster_dir_name }} to discard the current world (got
+      '{{ dst_regenerate_confirm }}'), and stop the cluster first (it is {{ _dst_obs.state }}).
+    quiet: true
+
+- name: Which shards have a world?
+  ansible.builtin.stat:
+    path: "{{ shard.path }}/save"
+  loop: "{{ _dst_shards }}"
+  loop_control:
+    loop_var: shard
+    label: "{{ shard.name }}"
+  register: _dst_regen_saves
+
+- name: Back up the cluster first
+  ansible.builtin.command:
+    argv: ["{{ _dst_dirs.bin }}/dst-backup.sh", pre-regenerate]
+  changed_when: true
+  when: _dst_regen_saves.results | selectattr('stat.exists') | list | length > 0
+
+- name: Choose where the old world goes
+  ansible.builtin.set_fact:
+    _dst_regen_dest: "{{ _dst_root }}/discarded/{{ now(utc=true).strftime('%Y%m%dT%H%M%SZ') }}"
+
+- name: Create it
+  ansible.builtin.file:
+    path: "{{ _dst_regen_dest }}"
+    state: directory
+    mode: "0750"
+  when: _dst_regen_saves.results | selectattr('stat.exists') | list | length > 0
+
+- name: Move each shard's world aside
+  ansible.builtin.command:
+    argv:
+      - mv
+      - --no-clobber
+      - "{{ item.shard.path }}/save"
+      - "{{ _dst_regen_dest }}/{{ item.shard.name }}"
+    removes: "{{ item.shard.path }}/save"
+  loop: "{{ _dst_regen_saves.results | selectattr('stat.exists') | list }}"
+  loop_control:
+    label: "{{ item.shard.name }}"
+
+- name: Re-apply the declared configuration
+  # With no world on disk, config.yml now writes each shard's world-generation file again —
+  # the one the game rewrote at the last generation is replaced by the declared settings.
+  # dst_apply is a set_fact (the resolver), so it is overridden the same way.
+  ansible.builtin.set_fact:
+    dst_apply: true
+
+- name: Write the declared cluster files
+  ansible.builtin.include_tasks: config.yml
+
+- name: Report
+  ansible.builtin.debug:
+    msg:
+      - >-
+        {{ ('Old world moved to ' ~ _dst_regen_dest ~ ' (shards '
+            ~ (_dst_regen_saves.results | selectattr('stat.exists') | map(attribute='shard.name') | join(', '))
+            ~ ').') if (_dst_regen_saves.results | selectattr('stat.exists') | list | length > 0)
+           else 'There was no world to discard.' }}
+      - "The next start (dst_action=start, or an allowlisted client) generates a fresh world from the declared settings."

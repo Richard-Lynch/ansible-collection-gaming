@@ -1,0 +1,305 @@
+---
+# The cluster's FILES: directory tree, cluster.ini, per-shard server.ini and world-gen overrides,
+# the mod files and the player lists. No podman, no systemd — so this is also what the molecule
+# scenario converges for real.
+#
+# GENERATE, DON'T APPLY. Every write runs in check mode with a diff unless dst_apply is true, so a
+# bare run prints exactly what would change. A file that does not exist yet has no parent to diff
+# into, so on a host that was never deployed the preview says so instead of failing.
+
+- name: Resolve the credentials
+  ansible.builtin.include_tasks: _lookups.yml
+
+- name: Read what is already on disk
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop: "{{ [_dst_cluster_path] + (_dst_shards | map(attribute='path') | list) + [_dst_dirs.config] }}"
+  register: _dst_existing
+
+- name: Index existing directories
+  ansible.builtin.set_fact:
+    _dst_exists: >-
+      {{ _dst_existing.results | selectattr('stat.exists') | map(attribute='item') | list }}
+
+- name: Create the directory tree
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0750"
+  loop: >-
+    {{ (_dst_dirs.values() | list) + [_dst_root ~ '/data/DoNotStarveTogether', _dst_cluster_path]
+       + (_dst_shards | map(attribute='path') | list) }}
+  check_mode: "{{ not (dst_apply | bool) }}"
+  when: dst_apply | bool
+
+- name: Report a fresh install
+  ansible.builtin.debug:
+    msg: >-
+      {{ _dst_cluster_path }} does not exist yet, so there is nothing to diff against. With
+      dst_apply=true this creates the cluster '{{ dst_cluster_dir_name }}' with shards
+      {{ _dst_shards | map(attribute='name') | list }} and {{ _dst_mods | selectattr('enabled') | list | length }}
+      enabled mod(s).
+  when:
+    - not (dst_apply | bool)
+    - _dst_cluster_path not in _dst_exists
+
+# ------------------------------------------------------------------------------- cluster level
+- name: Write cluster.ini
+  ansible.builtin.copy:
+    dest: "{{ _dst_cluster_path }}/cluster.ini"
+    mode: "0600"
+    content: >-
+      {{ {
+           'GAMEPLAY': {
+             'game_mode': dst_game_mode,
+             'max_players': dst_max_players | int,
+             'pvp': dst_pvp | bool,
+             'pause_when_empty': dst_pause_when_empty | bool,
+             'vote_enabled': dst_vote_enabled | bool,
+             'vote_kick_enabled': dst_vote_kick_enabled | bool,
+           },
+           'NETWORK': {
+             'cluster_name': dst_cluster_name,
+             'cluster_description': dst_cluster_description,
+             'cluster_password': _dst_password,
+             'cluster_intention': dst_cluster_intention,
+             'lan_only_cluster': dst_lan_only | bool,
+             'offline_cluster': dst_offline | bool,
+             'tick_rate': dst_tick_rate | int,
+             'whitelist_slots': dst_whitelist_slots | int,
+             'cluster_language': dst_cluster_language,
+             'autosaver_enabled': dst_autosaver_enabled | bool,
+           },
+           'MISC': {
+             'console_enabled': dst_console_enabled | bool,
+             'max_snapshots': dst_max_snapshots | int,
+           },
+           'SHARD': {
+             'shard_enabled': (_dst_enabled_shards | length) > 1,
+             'bind_ip': dst_shard_bind_ip,
+             'master_ip': dst_shard_bind_ip,
+             'master_port': dst_shard_master_port | int,
+             'cluster_key': _dst_cluster_key,
+           },
+           'STEAM': {
+             'steam_group_id': (dst_steam_group_id | int) if (dst_steam_group_id | int) > 0 else none,
+             'steam_group_only': (dst_steam_group_only | bool) if (dst_steam_group_id | int) > 0 else none,
+             'steam_group_admins': (dst_steam_group_admins | bool) if (dst_steam_group_id | int) > 0 else none,
+           },
+         } | richard_lynch.gaming.to_dst_ini(header=_dst_header, extra=dst_cluster_ini_extra) }}
+  # 0600 and no_log: it carries the join password and the shard key.
+  no_log: true
+  check_mode: "{{ not (dst_apply | bool) }}"
+  when: dst_apply | bool or _dst_cluster_path in _dst_exists
+  register: _dst_w_cluster
+
+- name: Write the cluster token
+  ansible.builtin.copy:
+    dest: "{{ _dst_cluster_path }}/cluster_token.txt"
+    mode: "0600"
+    content: "{{ _dst_token }}"
+  no_log: true
+  check_mode: "{{ not (dst_apply | bool) }}"
+  when:
+    - not (dst_offline | bool)
+    - dst_apply | bool or _dst_cluster_path in _dst_exists
+  register: _dst_w_token
+
+- name: Remove the cluster token from an offline cluster
+  # An offline cluster never authenticates, so a stale token on disk is a credential with no
+  # purpose — and the next reader would assume it was in use.
+  ansible.builtin.file:
+    path: "{{ _dst_cluster_path }}/cluster_token.txt"
+    state: absent
+  check_mode: "{{ not (dst_apply | bool) }}"
+  when: dst_offline | bool
+  register: _dst_w_token_rm
+
+- name: Write the player lists
+  ansible.builtin.copy:
+    dest: "{{ _dst_cluster_path }}/{{ item.file }}"
+    mode: "0640"
+    content: "{{ (item.ids | join('\n') ~ '\n') if (item.ids | length > 0) else '' }}"
+  loop:
+    - { file: adminlist.txt, ids: "{{ dst_admins }}" }
+    - { file: whitelist.txt, ids: "{{ dst_whitelist }}" }
+    - { file: blocklist.txt, ids: "{{ dst_blocklist }}" }
+  loop_control:
+    label: "{{ item.file }} ({{ item.ids | length }})"
+  diff: true
+  check_mode: "{{ not (dst_apply | bool) }}"
+  when: dst_apply | bool or _dst_cluster_path in _dst_exists
+  register: _dst_w_lists
+
+# ------------------------------------------------------------------------------- per shard
+- name: Find each shard's current server.ini
+  # To PRESERVE a shard id the game assigned. A secondary shard started without one generates a
+  # random id and writes it back into its own server.ini; re-rendering without it would strip it
+  # on every deploy (dst_ini_get explains the cost).
+  ansible.builtin.find:
+    paths: "{{ _dst_shards | map(attribute='path') | select('in', _dst_exists) | list }}"
+    patterns: server.ini
+    depth: 1
+  register: _dst_cur_ini
+  when: _dst_shards | map(attribute='path') | select('in', _dst_exists) | list | length > 0
+
+- name: Read them
+  ansible.builtin.slurp:
+    src: "{{ item }}"
+  loop: "{{ _dst_cur_ini.files | default([]) | map(attribute='path') | list }}"
+  register: _dst_cur_ini_read
+
+- name: Index the game-assigned shard ids by shard directory
+  ansible.builtin.set_fact:
+    _dst_kept_ids: >-
+      {{ dict(_dst_cur_ini_read.results | map(attribute='item') | map('dirname')
+              | zip(_dst_cur_ini_read.results | map(attribute='content') | map('b64decode')
+                    | map('richard_lynch.gaming.dst_ini_get', 'SHARD', 'id'))) }}
+
+- name: Index the current server.ini text by shard directory
+  ansible.builtin.set_fact:
+    _dst_cur_ini_text: >-
+      {{ dict(_dst_cur_ini_read.results | map(attribute='item') | map('dirname')
+              | zip(_dst_cur_ini_read.results | map(attribute='content') | map('b64decode'))) }}
+
+- name: Which shards already have a world?
+  # A shard's world is generated once, into <shard>/save. World-generation settings are read only
+  # then — and the game REWRITES worldgenoverride.lua into its own format when it generates
+  # (`KLEI     1 return {...}`, with `preset` converted to
+  # worldgen_preset/settings_preset). Rewriting it afterwards would fight the game on every deploy
+  # and change nothing in the world, so it is written only while a shard has no world yet.
+  ansible.builtin.stat:
+    path: "{{ shard.path }}/save"
+  loop: "{{ _dst_shards }}"
+  loop_control:
+    loop_var: shard
+    label: "{{ shard.name }}"
+  register: _dst_saves
+
+- name: Index the shards that have a world
+  ansible.builtin.set_fact:
+    _dst_has_world: >-
+      {{ _dst_saves.results | selectattr('stat.exists') | map(attribute='shard.path') | list }}
+
+- name: Write each shard's server.ini
+  # Written only when its MEANING differs from what is on disk: the game rewrites this file in
+  # its own layout and appends the shard id it assigned, so a byte comparison would rewrite it
+  # after every run (dst_ini_parse). A game-assigned id is carried over unless inventory pins one.
+  ansible.builtin.copy:
+    dest: "{{ shard.path }}/server.ini"
+    mode: "0640"
+    content: "{{ _server_ini }}"
+  loop: "{{ _dst_shards }}"
+  loop_control:
+    loop_var: shard
+    label: "{{ shard.name }}"
+  vars:
+    _server_ini: >-
+      {{ {
+           'NETWORK': {'server_port': shard.server_port | int},
+           'SHARD': {'is_master': shard.is_master | bool, 'name': shard.name,
+                     'id': (shard.id | int) if shard.id is not none
+                           else ((_dst_kept_ids[shard.path] | int)
+                                 if (_dst_kept_ids[shard.path] | default(none)) is not none
+                                 else none)},
+           'STEAM': {'master_server_port': shard.master_server_port | int,
+                     'authentication_port': shard.authentication_port | int},
+           'ACCOUNT': {'encode_user_path': true},
+         } | richard_lynch.gaming.to_dst_ini(header=_dst_header, extra=shard.server_ini_extra) }}
+  diff: true
+  check_mode: "{{ not (dst_apply | bool) }}"
+  when:
+    - dst_apply | bool or shard.path in _dst_exists
+    - (_dst_cur_ini_text[shard.path] | default('') | richard_lynch.gaming.dst_ini_parse) != (_server_ini | richard_lynch.gaming.dst_ini_parse)
+  register: _dst_w_server
+
+- name: Write each shard's world-generation override (shards with no world yet)
+  # worldgenoverride.lua (presets + overrides) OR leveldataoverride.lua (a complete table) — the
+  # game reads whichever exists, and both at once is ambiguous; the one not in use is removed
+  # below. Keys follow the game's CURRENT format (worldgen_preset + settings_preset), which is
+  # what it converts the older single `preset` into.
+  ansible.builtin.copy:
+    dest: "{{ shard.path }}/{{ 'leveldataoverride.lua' if (shard.leveldata_override | length > 0) else 'worldgenoverride.lua' }}"
+    mode: "0640"
+    content: >-
+      {{ shard.leveldata_override | richard_lynch.gaming.dst_lua_return(header=_dst_header)
+         if (shard.leveldata_override | length > 0)
+         else ({'override_enabled': true,
+                'worldgen_preset': shard.worldgen_preset if (shard.worldgen_preset | length > 0) else none,
+                'settings_preset': shard.worldgen_preset if (shard.worldgen_preset | length > 0) else none,
+                'overrides': shard.worldgen_overrides} | richard_lynch.gaming.dst_lua_return(header=_dst_header)) }}
+  loop: "{{ _dst_shards }}"
+  loop_control:
+    loop_var: shard
+    label: "{{ shard.name }}"
+  diff: true
+  check_mode: "{{ not (dst_apply | bool) }}"
+  when:
+    - dst_apply | bool or shard.path in _dst_exists
+    - shard.path not in _dst_has_world
+    - (shard.leveldata_override | length > 0) or (shard.worldgen_preset | length > 0) or (shard.worldgen_overrides | length > 0)
+  register: _dst_w_worldgen
+
+- name: Remove the world-generation file each shard is NOT using (shards with no world yet)
+  ansible.builtin.file:
+    path: "{{ item[0].path }}/{{ item[1] }}"
+    state: absent
+  loop: >-
+    {{ _dst_shards | product(['worldgenoverride.lua', 'leveldataoverride.lua']) | list }}
+  loop_control:
+    label: "{{ item[0].name }}/{{ item[1] }}"
+  vars:
+    _uses: >-
+      {{ 'leveldataoverride.lua' if (item[0].leveldata_override | length > 0)
+         else ('worldgenoverride.lua'
+               if (item[0].worldgen_preset | length > 0 or item[0].worldgen_overrides | length > 0)
+               else '') }}
+  check_mode: "{{ not (dst_apply | bool) }}"
+  when:
+    - dst_apply | bool or item[0].path in _dst_exists
+    - item[0].path not in _dst_has_world
+    - item[1] != _uses
+  register: _dst_w_worldgen_rm
+
+- name: Report world-generation settings that cannot apply
+  ansible.builtin.debug:
+    msg: >-
+      Shard(s) {{ _dst_shards | selectattr('path', 'in', _dst_has_world) | map(attribute='name') | list }}
+      already have a world, so their world-generation file is left as the game keeps it: changed
+      worldgen settings would apply only to a REGENERATED world (in game: c_regenerateworld(),
+      which discards the current one).
+  when: _dst_has_world | length > 0
+
+- name: Write each shard's modoverrides.lua
+  ansible.builtin.copy:
+    dest: "{{ shard.path }}/modoverrides.lua"
+    mode: "0640"
+    content: "{{ _dst_mods | richard_lynch.gaming.dst_modoverrides(shard.name) | richard_lynch.gaming.dst_lua_return(header=_dst_header) }}"
+  loop: "{{ _dst_shards }}"
+  loop_control:
+    loop_var: shard
+    label: "{{ shard.name }}"
+  diff: true
+  check_mode: "{{ not (dst_apply | bool) }}"
+  when: dst_apply | bool or shard.path in _dst_exists
+  register: _dst_w_modoverrides
+
+# ------------------------------------------------------------------------------- mod downloads
+- name: Write the managed dedicated_server_mods_setup.lua
+  # Into /config, NOT into the install: steamcmd overwrites the install's copy on every update,
+  # so dst-prepare re-installs this one after each update (see files/image/dst-prepare.sh).
+  ansible.builtin.copy:
+    dest: "{{ _dst_dirs.config }}/dedicated_server_mods_setup.lua"
+    mode: "0644"
+    content: "{{ _dst_mods | richard_lynch.gaming.dst_mods_setup(dst_mod_collections, header=_dst_header) }}"
+  diff: true
+  check_mode: "{{ not (dst_apply | bool) }}"
+  when: dst_apply | bool or _dst_dirs.config in _dst_exists
+  register: _dst_w_modsetup
+
+- name: Summarise what the cluster files would change
+  ansible.builtin.set_fact:
+    _dst_config_changed: >-
+      {{ [_dst_w_cluster, _dst_w_token, _dst_w_token_rm, _dst_w_lists, _dst_w_server,
+          _dst_w_worldgen, _dst_w_worldgen_rm, _dst_w_modoverrides, _dst_w_modsetup]
+         | select('changed') | list | length > 0 }}

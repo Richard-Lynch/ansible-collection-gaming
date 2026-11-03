@@ -1,0 +1,14 @@
+---
+# AUTO-GENERATED defaults file — DO NOT EDIT.
+#
+# Source of truth: roles/klei_dst_client/meta/argument_specs.py
+# Regenerate:      venv/bin/python tools/argspec/cli.py x generate klei_dst_client
+#
+# Edits here are silently overwritten on the next generation. To change a value or its
+# documentation, change the OptionSpec in the source file above — descriptions there
+# are emitted as the comments in this file.
+# Entrypoint:      cluster_token
+
+# Home directory to look for the game under. Empty derives it from the
+# connecting user's facts (ansible_env.HOME); set only by tests.
+klei_dst_client_home__default: ''

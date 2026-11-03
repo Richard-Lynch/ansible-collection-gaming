@@ -1,0 +1,95 @@
+#!/bin/bash
+# Start / stop / check the Don't Starve Together server on {{ steamdeck_dst_control_target }}.
+#
+# MANAGED BY ANSIBLE — roles/steamdeck/templates/dst-control.sh.j2. Edits here are overwritten.
+#
+#   iaac-dst.sh start | stop | status
+{#
+  Called by the "DST: play" tile (iaac-dst-play.sh) to start and stop the server, and usable as
+  its own Start / Stop tiles if declared (each passes its verb as the launch option; `status` is
+  for a terminal, since a tile has nowhere to show it). It
+  calls the server's control endpoint (roles/service_dst_server/files/dst_control.py) over HTTP.
+  No key and no credential on this device: the endpoint admits only this Deck's reserved
+  addresses, and the grant is "start or stop one game server", nothing else.
+
+  THE POST IS ANSWERED BEFORE THE WORK IS DONE, so "accepted" proves nothing. `start` then polls
+  until EVERY shard is listening — joinable, the property you actually want before opening DST —
+  and `stop` until the server reports stopped (every shard saves on the way down).
+
+  Game Mode gives a tile no terminal; the log is the record of what a press did:
+    ~/.local/share/iaac-dst.log
+#}
+set -uo pipefail
+# A tile runs this under Steam with LD_PRELOAD=gameoverlayrenderer.so, injected into every child.
+# Nothing here needs it, and a `tee` carrying it can spin at 100% CPU and hang a start
+# (see dst-play.sh.j2). No child gets it.
+unset LD_PRELOAD
+
+URL="{{ steamdeck_dst_control_url | regex_replace('/+$', '') }}"
+TARGET="{{ steamdeck_dst_control_target }}"
+START_WAIT="{{ steamdeck_dst_start_timeout }}"
+STOP_WAIT=240
+VERB="${1:-status}"
+
+LOG="${HOME}/.local/share/iaac-dst.log"
+mkdir -p "$(dirname "$LOG")"
+say() { printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$*" | tee -a "$LOG"; }
+
+# One field from the endpoint's JSON. python3 is in the SteamOS base image; jq is not.
+field() {
+    printf '%s' "$1" | python3 -c '
+import json, sys
+v = json.load(sys.stdin)
+for k in sys.argv[1].split("."):
+    v = v.get(k) if isinstance(v, dict) else None
+print("" if v is None else v)
+' "$2" 2>/dev/null
+}
+
+health() { curl -sS -m 8 "${URL}/healthz" 2>/dev/null; }
+
+case "$VERB" in
+    status)
+        h=$(health) || { say "status: cannot reach ${URL} — is ${TARGET} on? (Wake tile)"; exit 1; }
+        say "status: $(field "$h" state); players=$(field "$h" players) (via $(field "$h" players_source));" \
+            "idle $(field "$h" idle.verdict), stop in $(field "$h" idle.stop_in_s)s"
+        exit 0
+        ;;
+    start|stop) ;;
+    *) say "usage: iaac-dst.sh start|stop|status (got '$VERB')"; exit 2 ;;
+esac
+
+say "${VERB}: asking ${URL}/${VERB} on ${TARGET}"
+body_file=$(mktemp)
+code=$(curl -sS -m 15 -o "$body_file" -w '%{http_code}' -X POST "${URL}/${VERB}" 2>>"$LOG")
+body=$(cat "$body_file" 2>/dev/null)
+rm -f "$body_file"
+case "$code" in
+    200) say "${VERB}: nothing to do — ${body}" ;;
+    202) say "${VERB}: accepted — ${body}" ;;
+    403) say "REFUSED: this Deck's address is not on the server's allowlist (dst_control_allow). ${body}"; exit 1 ;;
+    000) say "FAILED: could not reach ${URL} — is ${TARGET} on? Try the Wake tile first."; exit 1 ;;
+    *)   say "FAILED: HTTP ${code} ${body}"; exit 1 ;;
+esac
+
+want=running; wait_s="$START_WAIT"
+[ "$VERB" = stop ] && { want=stopped; wait_s="$STOP_WAIT"; }
+start=$(date +%s)
+last=""
+while [ $(( $(date +%s) - start )) -lt "$wait_s" ]; do
+    sleep 5
+    h=$(health) || continue
+    state=$(field "$h" state)
+    [ "$state" != "$last" ] && say "  ${state} ($(( $(date +%s) - start ))s)"
+    last="$state"
+    if [ "$state" = "$want" ]; then
+        say "DONE: ${TARGET}'s DST server is ${want} ($(( $(date +%s) - start ))s)."
+        exit 0
+    fi
+    if [ "$state" = failed ]; then
+        say "FAILED: the server reports failed — check it with dst_action=status from the controller."
+        exit 1
+    fi
+done
+say "NOT ${want} after ${wait_s}s. Last status: ${h:-'(no answer)'}"
+exit 1

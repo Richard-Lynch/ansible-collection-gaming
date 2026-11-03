@@ -1,0 +1,11 @@
+---
+galaxy_info:
+  namespace: richard_lynch
+  author: Richard Lynch
+  description: >-
+    Install one Decky Loader plugin from a pinned GitHub release, write its configuration, and
+    verify its backend is loaded and healthy.
+  license: GPL-3.0-or-later
+  min_ansible_version: "2.19"
+  galaxy_tags: [steamos, decky, gaming, linux]
+dependencies: []

@@ -1,0 +1,72 @@
+#!/bin/bash
+# Restart Game Mode Steam on {{ steamdeck_steam_guard_target }}, and report whether it came back.
+#
+# MANAGED BY ANSIBLE — roles/steamdeck/templates/restart-host-steam.sh.j2. Edits here are
+# overwritten.
+{#
+  WHAT IT IS FOR. The streaming host can be awake with Steam running and still offer this Deck
+  nothing — a game stuck launching can hold the host for days, or the streaming listeners do not
+  come back. Restarting the host's Game Mode
+  session clears both, and this is the button for it from the sofa.
+
+  HOW. An HTTP POST to a small Steam guard service on the host, which restarts the session as
+  the session user. No key and no credential on this device: the guard admits only this Deck's
+  reserved addresses (its own allowlist), so the grant is
+  "ask for a restart" and nothing else.
+
+  IT CLOSES WHATEVER IS RUNNING ON THE HOST — including a game someone is genuinely playing
+  there. That is the point when a launch is stuck, and the reason it is a deliberate press.
+
+  The POST is answered before the session is back, so "accepted" proves nothing. The script then
+  POLLS the guard and reports success only once Steam is freshly running AND Remote Play is
+  listening again — the property the Deck actually needs.
+#}
+set -uo pipefail
+
+URL="{{ steamdeck_steam_guard_url | regex_replace('/+$', '') }}"
+TARGET="{{ steamdeck_steam_guard_target }}"
+WAIT="{{ steamdeck_steam_guard_timeout }}"
+
+LOG="${HOME}/.local/share/iaac-restart-host-steam.log"
+mkdir -p "$(dirname "$LOG")"
+say() {
+    # Game Mode gives a tile no terminal; the log is the only record of what a press did.
+    printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$*" | tee -a "$LOG"
+}
+
+say "restart: asking ${URL}/steam/restart to restart Steam on ${TARGET}"
+code=$(curl -sS -m 10 -o /tmp/iaac-restart-host-steam.json -w '%{http_code}' -X POST \
+    "${URL}/steam/restart" 2>>"$LOG")
+body=$(cat /tmp/iaac-restart-host-steam.json 2>/dev/null)
+case "$code" in
+    202) say "accepted: ${body}" ;;
+    429) say "REFUSED: ${TARGET} was restarted moments ago — wait a minute. ${body}"; exit 1 ;;
+    403) say "REFUSED: this Deck's address is not on the guard's allowlist. ${body}"; exit 1 ;;
+    000) say "FAILED: could not reach ${URL} — is ${TARGET} on? Try the Wake tile first."; exit 1 ;;
+    *)   say "FAILED: HTTP ${code} ${body}"; exit 1 ;;
+esac
+
+# THE ONLY HONEST RESULT. Wait for a Steam that started AFTER this press and is listening.
+start=$(date +%s)
+deadline=$(( start + WAIT ))
+while [ "$(date +%s)" -lt "$deadline" ]; do
+    sleep 5
+    h=$(curl -sS -m 5 "${URL}/healthz" 2>/dev/null) || continue
+    elapsed=$(( $(date +%s) - start ))
+    # python3 is in the SteamOS base image; jq is not.
+    if printf '%s' "$h" | python3 -c '
+import json, sys
+h = json.load(sys.stdin)
+age = h.get("steam_age_s")
+fresh = age is not None and age <= int(sys.argv[1]) + 10
+sys.exit(0 if fresh and h.get("webhelper") and h.get("remote_play_listening") else 1)
+' "$elapsed" 2>/dev/null; then
+        say "BACK: Steam on ${TARGET} restarted and Remote Play is listening (${elapsed}s)."
+        say "  If ${TARGET} still does not appear, check its TV: a Steam self-update can stop on"
+        say "  the 'connect your controller' setup screen, which needs one controller press."
+        exit 0
+    fi
+done
+
+say "NOT BACK after ${WAIT}s. Last status: ${h:-'(no answer)'}"
+exit 1

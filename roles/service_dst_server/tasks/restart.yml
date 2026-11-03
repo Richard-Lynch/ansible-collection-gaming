@@ -1,0 +1,11 @@
+---
+# ENTRYPOINT: stop (every shard saves, exits proven clean), then start and wait until joinable.
+# DROPS ANYONE CONNECTED — it is how a deploy's new configuration reaches a running server.
+#
+#   dst_action=restart
+
+- name: Stop
+  ansible.builtin.include_tasks: stop.yml
+
+- name: Start
+  ansible.builtin.include_tasks: start.yml

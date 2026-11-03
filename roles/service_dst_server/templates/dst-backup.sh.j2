@@ -1,0 +1,47 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# Archive the DST cluster '{{ dst_cluster_dir_name }}' and prune to the newest {{ dst_backup_keep }}.
+#
+#   dst-backup.sh [reason]      # reason is a tag in the file name: pre-start, manual, ...
+#
+# Run while the cluster is STOPPED for a consistent archive: the pre-start backup is taken by
+# dst-prepare-host.sh before any shard starts. The archive holds the whole cluster directory —
+# world saves, configuration AND cluster_token.txt — so it is written 0600 into a 0750 directory.
+#
+# Written to a .partial name and renamed only when tar succeeds, so an interrupted backup can
+# never be mistaken for (or pruned in favour of) a good one.
+set -euo pipefail
+umask 077
+
+SRC_PARENT={{ (_dst_root ~ '/data/DoNotStarveTogether') | quote }}
+NAME={{ dst_cluster_dir_name | quote }}
+DEST={{ _dst_dirs.backups | quote }}
+PREFIX={{ (dst_instance ~ '-' ~ dst_cluster_dir_name) | quote }}
+KEEP={{ dst_backup_keep | int }}
+REASON="${1:-manual}"
+case "$REASON" in *[!A-Za-z0-9_-]*) echo "dst-backup: bad reason '$REASON'" >&2; exit 2 ;; esac
+
+if [ ! -d "$SRC_PARENT/$NAME" ]; then
+    echo "dst-backup: no cluster at $SRC_PARENT/$NAME yet — nothing to back up"
+    exit 0
+fi
+
+mkdir -p "$DEST"
+out="$DEST/${PREFIX}-$(date +%Y%m%dT%H%M%S)-${REASON}.tar.gz"
+tar -C "$SRC_PARENT" -czf "$out.partial" "$NAME"
+mv "$out.partial" "$out"
+echo "dst-backup: wrote $out ($(du -h "$out" | cut -f1))"
+
+# Prune: newest KEEP survive. Names sort by their timestamp, so a lexical sort is chronological
+# and does not depend on mtimes (which a restore or a copy can change).
+#
+# {% raw %} — bash's ${#array[@]} opens a Jinja COMMENT ("{#"), so this block is not templated.
+mapfile -t all < <(find "$DEST" -maxdepth 1 -type f -name "${PREFIX}-*.tar.gz" -printf '%f\n' | sort)
+excess=$(( ${#all[@]} - KEEP ))
+if [ "$excess" -gt 0 ]; then
+    for f in "${all[@]:0:$excess}"; do
+        rm -f -- "$DEST/$f"
+        echo "dst-backup: pruned $f"
+    done
+fi
+# {% endraw %}

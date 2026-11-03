@@ -1,0 +1,12 @@
+---
+- name: Verify
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: The role's entrypoint parses
+      ansible.builtin.command:
+        argv:
+          - ansible-playbook
+          - --syntax-check
+          - "{{ playbook_dir }}/syntax_check.yml"
+      changed_when: false

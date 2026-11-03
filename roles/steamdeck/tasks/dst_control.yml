@@ -1,0 +1,69 @@
+---
+# ENTRYPOINT: install the script behind the Don't Starve Together Start / Stop / Status tiles.
+#
+# The server side is roles/service_dst_server; this is the client of its control endpoint. Same
+# shape as steam_restart_host: WRITES TO $HOME ONLY, unprivileged, survives a SteamOS image
+# update. The tiles themselves come from steamdeck_managed_shortcuts via
+# steamdeck_action=shortcuts (which stops Steam ON THE DECK to write shortcuts.vdf).
+
+- name: Apply role defaults
+  ansible.builtin.include_tasks: setup_vars.yml
+
+- name: Assert the server is declared
+  # Site configuration: which host, and where its control endpoint listens, belongs in inventory.
+  ansible.builtin.assert:
+    that:
+      - steamdeck_dst_control_url | default('') is match('^https?://')
+      - steamdeck_dst_control_target | default('') | length > 0
+    fail_msg: >-
+      Declare steamdeck_dst_control_url (e.g. http://<host name>:8091) and
+      steamdeck_dst_control_target in inventory. Got url='{{ steamdeck_dst_control_url | default('') }}'
+      target='{{ steamdeck_dst_control_target | default('') }}'.
+    quiet: true
+
+- name: Derive the script location
+  ansible.builtin.set_fact:
+    _sd_dst_script: "{{ ansible_env.HOME }}/.local/bin/iaac-dst.sh"
+
+- name: Ensure the script directory exists
+  ansible.builtin.file:
+    path: "{{ _sd_dst_script | dirname }}"
+    state: directory
+    mode: "0755"
+
+- name: Install the DST control script
+  ansible.builtin.template:
+    src: dst-control.sh.j2
+    dest: "{{ _sd_dst_script }}"
+    mode: "0755"
+  register: _sd_dst_installed
+
+- name: Check the endpoint answers THIS Deck
+  # FROM the Deck, so it proves what a press depends on: the name resolves on the Deck's current
+  # VLAN, and the allowlist admits the Deck's current address. /healthz only — installing the
+  # buttons must never press one.
+  ansible.builtin.uri:
+    url: "{{ steamdeck_dst_control_url | regex_replace('/+$', '') }}/healthz"
+    return_content: true
+    status_code: [200, 403]
+    timeout: 8
+  register: _sd_dst_check
+  failed_when: false
+  changed_when: false
+
+- name: Report
+  ansible.builtin.debug:
+    msg:
+      - >-
+        {{ 'Installed' if (_sd_dst_installed is changed) else 'Already current' }}:
+        {{ _sd_dst_script }} (tiles pass start / stop / status as the launch option)
+      - >-
+        {{ ('ENDPOINT OK from this Deck (' ~ ansible_all_ipv4_addresses | join(', ') ~ '): server '
+            ~ (_sd_dst_check.content | from_json).state)
+           if (_sd_dst_check.status | default(0)) == 200
+           else ('ENDPOINT REFUSES THIS DECK (403) — its address is not on dst_control_allow: '
+                 ~ (_sd_dst_check.content | default('')))
+           if (_sd_dst_check.status | default(0)) == 403
+           else ('ENDPOINT UNREACHABLE (' ~ (_sd_dst_check.msg | default('no response')) ~ ') — '
+                 ~ 'a press will fail until the server is deployed and the name resolves.') }}
+      - "Run log on the device: $HOME/.local/share/iaac-dst.log"

@@ -1,0 +1,83 @@
+---
+# AUTO-GENERATED defaults file — DO NOT EDIT.
+#
+# Source of truth: roles/decky_plugin/meta/argument_specs.py
+# Regenerate:      venv/bin/python tools/argspec/cli.py x generate decky_plugin
+#
+# Edits here are silently overwritten on the next generation. To change a value or its
+# documentation, change the OptionSpec in the source file above — descriptions there
+# are emitted as the comments in this file.
+# Entrypoint:      main
+
+# Actually write to the device. Default false reports the plan only.
+decky_plugin_apply__default: false
+
+# GitHub OWNER/REPO publishing the release. Required unless
+# decky_plugin_archive names a local archive.
+decky_plugin_repo__default: ''
+
+# Release asset name. Empty derives <directory>-<version>.zip.
+decky_plugin_asset__default: ''
+
+# Path ON THE CONTROLLER of an already-downloaded archive. Set, the GitHub
+# download is skipped (the sha256 is still enforced). For tests.
+decky_plugin_archive__default: ''
+
+# Controller directory for downloads and unpacked packages. Empty derives
+# ~/.cache/iaac/decky_plugin from the controller user's HOME.
+decky_plugin_staging_dir__default: ''
+
+# The plugin's config document, written as JSON. Empty writes none. Build
+# it from inventory so the plugin and anything else reading the same
+# values cannot disagree. NOT for secrets as written: the file is
+# readable by the device user and the role does not no_log it.
+decky_plugin_config__default: {}
+
+# Mode of the config file. Owned by the device user, whom the backend
+# runs as (plugin.json without the `root` flag).
+decky_plugin_config_mode__default: '0600'
+
+# Owner (and group) of the plugin's top directory and plugin.json. Every
+# other file, and the config, belong to the CONNECTING user — Decky's
+# HOST_USER, the account it runs unprivileged backends as. Decky re-chowns
+# the WHOLE plugin tree on load whenever the top directory is not owned
+# by the user it runs as (root), so this is what keeps a converge and
+# Decky from fighting. Tests set it to the test user.
+decky_plugin_root_owner__default: root
+
+# Use privilege escalation for writes: ~/homebrew/plugins is root-owned
+# and the unit is a system unit. The CALLER supplies the become password.
+decky_plugin_become__default: true
+
+# Stop Decky around a change to the plugin's files and start it after,
+# then require the backend to come up. False writes the files with Decky
+# running and skips the post-apply verify (tests; no systemd).
+decky_plugin_restart__default: true
+
+# Seconds to wait after a Decky restart for the backend to report loaded.
+decky_plugin_verify_timeout__default: 90
+
+# Home directory holding ~/homebrew. Empty derives it from the connecting user's
+# facts (ansible_env.HOME); set only by tests.
+decky_plugin_home__default: ''
+
+# Decky Loader's systemd unit (a SYSTEM unit, running as root).
+decky_plugin_service__default: plugin_loader
+
+# Interpreter on the device for the read-only probe.
+decky_plugin_python__default: python3
+
+# Python regex the plugin's backend writes to its decky.logger log once it has
+# started (e.g. 'My Plugin backend loaded'). Empty: a running backend
+# process alone counts as loaded — weaker, and the report says which was used.
+decky_plugin_ready_pattern__default: ''
+
+# File name of the plugin's config in its settings directory.
+decky_plugin_config_file__default: config.json
+
+# 'module:function' importable from the plugin's OWN py_modules, called with the
+# config path and returning (config, error) — error None means parsed. Lets the
+# plugin's own validator judge the config, on the controller before it is written
+# and on the device after. A returned config carrying a non-empty `errors` dict
+# (per-section problems) is reported as invalid. Empty: JSON syntax only.
+decky_plugin_config_check__default: ''

@@ -1,0 +1,27 @@
+# Copyright: (c) 2026, Richard Lynch
+# GNU General Public License v3.0+ (see https://www.gnu.org/licenses/gpl-3.0.txt)
+---
+DOCUMENTATION:
+  name: dst_modoverrides
+  short_description: Build one shard's modoverrides table from a mod list
+  author: Richard Lynch (@Richard-Lynch)
+  description:
+    - "Includes each enabled mod whose C(shards) list is empty or names this shard, with its C(config) as C(configuration_options)."
+    - "A mod declared twice raises."
+  options:
+    _input:
+      description: "Mods, each a dict with C(id) and optional C(enabled), C(shards) and C(config)."
+      type: list
+      required: true
+    shard:
+      description: "The shard name."
+      type: str
+      required: true
+EXAMPLES: |
+  - name: Use dst_modoverrides
+    ansible.builtin.debug:
+      msg: "{{ mods | richard_lynch.gaming.dst_modoverrides('Master') | richard_lynch.gaming.dst_lua_return }}"
+RETURN:
+  _value:
+    description: "The table, keyed by workshop key."
+    type: dict

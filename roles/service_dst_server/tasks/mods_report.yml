@@ -1,0 +1,51 @@
+---
+# ENTRYPOINT: declared mods vs downloaded, and each mod's REAL option names. READ-ONLY.
+#
+#   dst_action=mods_report
+#
+# HOW TO ADD A MOD, case by case:
+#   1. add `- id: "<workshop id>"` (and a `name:` label) to dst_mods in inventory, no config
+#   2. deploy + start once — the server downloads it (or dst_action=update with the server stopped)
+#   3. run THIS: it prints the mod's options with their defaults and allowed values
+#   4. copy the options you want into the mod's `config:` and deploy; re-run this to check —
+#      unknown keys and values the mod does not offer are flagged, because DST ignores both
+#      silently
+
+- name: Report each declared mod
+  ansible.builtin.script:
+    cmd: >-
+      dst_mods_report.py {{ _dst_root | quote }}
+      {{ _dst_mods | to_json | quote }}
+    executable: "{{ dst_python }}"
+  # Backstop: the reader once hung on a real modinfo.lua until SSH dropped (fixed, and pinned
+  # in test_dst_mods_report.py). A report must never be able to wedge a play again.
+  timeout: 120
+  register: _dst_mods_raw
+  changed_when: false
+
+- name: Parse
+  ansible.builtin.set_fact:
+    _dst_mods_rep: "{{ _dst_mods_raw.stdout | from_json }}"
+
+- name: Report
+  ansible.builtin.debug:
+    msg: >-
+      {{ _dst_mods_rep
+         if _dst_mods_rep | length > 0
+         else 'No mods declared. Add one to dst_mods (see the header of this task file).' }}
+
+- name: Flag declarations the mods do not support
+  ansible.builtin.debug:
+    msg:
+      - "{{ m.key }} ({{ m.name | default(m.declared_name) }}):"
+      - "  unknown config keys (the mod has no such option — ignored by the game): {{ m.unknown_config_keys | default([]) }}"
+      - "  values the mod does not offer: {{ m.config_values_not_offered | default([]) }}"
+      - "  {{ m.warning | default('') }}"
+  loop: "{{ _dst_mods_rep }}"
+  loop_control:
+    loop_var: m
+    label: "{{ m.key }}"
+  when: >-
+    (m.unknown_config_keys | default([]) | length > 0)
+    or (m.config_values_not_offered | default([]) | length > 0)
+    or (m.warning is defined)

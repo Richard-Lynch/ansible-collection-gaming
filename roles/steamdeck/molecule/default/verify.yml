@@ -1,0 +1,333 @@
+---
+- name: Verify
+  hosts: localhost
+  # See converge.yml: facts on, and the role resolved HERE — molecule runs converge and verify as
+  # separate ansible-playbook invocations, so host facts do not survive between them. Resolving
+  # the role's real setup_vars.yml in this play is both the fix and the point.
+  gather_facts: true
+
+  vars:
+    # Steam stores a shortcut's appid SIGNED in shortcuts.vdf, and names artwork files with the
+    # UNSIGNED form. The pairs below are the two halves of the same
+    # number, which is what the conversion has to get right.
+    _appid_pairs:
+      - { signed: -1234567890, unsigned: 3060399406 }
+      - { signed: -2147483648, unsigned: 2147483648 } # the boundary: INT32_MIN
+      - { signed: -1, unsigned: 4294967295 } # the other boundary: all bits set
+      - { signed: 1623730, unsigned: 1623730 } # a POSITIVE appid must pass through unchanged
+
+    # Inputs and their appids, computed INDEPENDENTLY of the role (a separate implementation of
+    # Steam's documented crc32(exe+name)|0x80000000 derivation). Pinned as data so the assertion
+    # cannot be satisfied by the role simply agreeing with itself.
+    _appid_cases:
+      - { exe: /usr/bin/true, name: molecule-fixture, appid: -1611118459 }
+      - { exe: /usr/bin/steam, name: Palworld, appid: -2134328792 }
+
+  tasks:
+    - name: Resolve the role's defaults
+      # The ROLE'S OWN file — molecule runs converge and verify as separate ansible-playbook
+      # invocations, so converge's facts do not survive. Resolving here is what makes the
+      # defaults asserted below the role's real ones rather than a copy.
+      ansible.builtin.include_role:
+        name: steamdeck
+        tasks_from: setup_vars
+
+    # ---------------------------------------------------------------------------------------
+    # The signed/unsigned appid round-trip — the role's riskiest pure logic
+    # ---------------------------------------------------------------------------------------
+    - name: Apply the role's conversion to each fixture
+      # The same expression as tasks/artwork.yml: `+ 4294967296 if < 0 else unchanged`. The
+      # EXPECTED values are pinned as data above rather than recomputed here — recomputing them
+      # with the same expression would assert the copy against itself and pass no matter what.
+      ansible.builtin.set_fact:
+        _results: >-
+          {{ _results | default([]) + [
+               (item.signed | int) + 4294967296
+               if (item.signed | int) < 0 else (item.signed | int)
+             ] }}
+      loop: "{{ _appid_pairs }}"
+      loop_control:
+        label: "{{ item.signed }}"
+
+    - name: The Jinja conversion produces the UNSIGNED appid Steam names files with
+      # Getting this wrong finds no artwork and reports every shortcut as having none — silently,
+      # because a missing file is not an error anywhere in the chain.
+      ansible.builtin.assert:
+        that:
+          - _results == (_appid_pairs | map(attribute='unsigned') | list)
+        fail_msg: >-
+          signed -> unsigned conversion is wrong.
+          got={{ _results }} want={{ _appid_pairs | map(attribute='unsigned') | list }}
+        quiet: true
+
+    - name: Run the role's OWN generate_appid against pinned fixtures
+      # CALLS THE ROLE'S FUNCTION. An earlier version of this test recomputed the arithmetic
+      # inline and compared it to itself — which passed happily when the real function was
+      # mutated. The expected values below were computed INDEPENDENTLY (a separate
+      # implementation of Steam's documented derivation) and are pinned as data, so the only way
+      # this passes is if the role's function genuinely produces them.
+      #
+      # Steam derives a shortcut's appid as crc32(exe+name) with the high bit set, stored SIGNED.
+      # The boundary comparison (`>= 0x80000000`) is the fragile part: an off-by-one there shifts
+      # every appid by 2^32, artwork lands under an id nothing references, and every tile goes
+      # blank with no error.
+      ansible.builtin.command:
+        argv:
+          - "{{ ansible_python_interpreter | default('python3') }}"
+          - -c
+          - |
+            import json, sys
+            sys.path.insert(0, sys.argv[1])
+            from steam_shortcuts_merge import generate_appid
+            cases = json.loads(sys.argv[2])
+            print(json.dumps([generate_appid(c["exe"], c["name"]) for c in cases]))
+          - "{{ playbook_dir }}/../../files"
+          - "{{ _appid_cases | to_json }}"
+      register: _py
+      changed_when: false
+
+    - name: generate_appid produces the documented values
+      ansible.builtin.assert:
+        that:
+          - (_py.stdout | from_json) == (_appid_cases | map(attribute='appid') | list)
+        fail_msg: >-
+          generate_appid is wrong. got={{ _py.stdout | trim }}
+          want={{ _appid_cases | map(attribute='appid') | list }}.
+          Every value must be a SIGNED int32 with the high bit set; a shifted result means the
+          0x80000000 boundary comparison changed.
+        quiet: true
+
+    - name: Every generated appid is in signed int32 range
+      # Separate from the value check: a result outside the range is wrong even if it happened to
+      # match a fixture, and says the sign handling broke rather than the arithmetic.
+      ansible.builtin.assert:
+        that:
+          - (_py.stdout | from_json) | select('ge', 2147483648) | list | length == 0
+          - (_py.stdout | from_json) | select('lt', -2147483648) | list | length == 0
+        fail_msg: "generate_appid left signed int32 range: {{ _py.stdout | trim }}"
+        quiet: true
+
+    # ---------------------------------------------------------------------------------------
+    # Defaults that encode a safety decision
+    # ---------------------------------------------------------------------------------------
+    - name: Destructive and network-facing actions are off by default
+      # Every one of these guards something irreversible or disruptive. A default flipping to
+      # true would be silent until it ran.
+      ansible.builtin.assert:
+        that:
+          - not (steamdeck_apply | bool)
+        fail_msg: "steamdeck_apply defaults to {{ steamdeck_apply }}, which makes a bare run write"
+        quiet: true
+
+    - name: The role defaults to a read-only action
+      ansible.builtin.assert:
+        that:
+          - steamdeck_action in ['probe', 'status']
+        fail_msg: >-
+          steamdeck_action defaults to '{{ steamdeck_action }}', which is not read-only — a bare
+          run against an unfamiliar Deck must change nothing.
+        quiet: true
+
+    # ---------------------------------------------------------------------------------------
+    # Shortcut ownership labels — the role's OWN tasks/_shortcut_owners.yml, the file both
+    # shortcuts_report and the shortcuts plan read their labels from.
+    # ---------------------------------------------------------------------------------------
+    - name: Fixture shortcuts, shaped like a real shortcuts.vdf read
+      # Exe/StartDir/tags in the shape Steam ROM Manager writes, plus an SD-card
+      # install of the same layout, a near-miss path and a genuinely unknown entry.
+      ansible.builtin.set_fact:
+        _sd_sc:
+          shortcuts:
+            "0":
+              AppName: RetroArch
+              Exe: '"/home/deck/Emulation/tools/launchers/retroarch.sh"'
+              tags: { "0": Emulation }
+            "1":
+              AppName: Example Homebrew Game
+              Exe: >-
+                "/home/deck/Emulation/tools/launchers/retroarch.sh" -L /mgba_libretro.so
+                "/home/deck/Emulation/roms/gba/Example Homebrew Game.gba"
+              tags: { "0": Nintendo Game Boy Advance }
+            "2":
+              AppName: SD-card SRM tile
+              Exe: '"/run/media/mmcblk0p1/Emulation/tools/launchers/dolphin-emu.sh"'
+              tags: { "0": Nintendo GameCube }
+            "3":
+              AppName: Near miss
+              Exe: '"/home/deck/Emulation/tools/launchers-old/retroarch.sh"'
+            "4":
+              AppName: Unknown Game
+              Exe: '"/home/deck/Games/unknown/launch.sh"'
+            "5":
+              AppName: Google Chrome
+              Exe: '"/usr/bin/flatpak"'
+              tags: { "0": iaac }
+
+    - name: Run the role's attribution
+      ansible.builtin.include_role:
+        name: steamdeck
+        tasks_from: _shortcut_owners
+
+    - name: Each shortcut is attributed to its real owner
+      ansible.builtin.assert:
+        that:
+          - _sd_sc_owners['0'] == 'no — owned by Steam ROM Manager (EmuDeck)'
+          - _sd_sc_owners['1'] == 'no — owned by Steam ROM Manager (EmuDeck)'
+          - _sd_sc_owners['2'] == 'no — owned by Steam ROM Manager (EmuDeck)'
+          - _sd_sc_owners['3'] == 'no — origin unknown (not tagged by iaac)'
+          - _sd_sc_owners['4'] == 'no — origin unknown (not tagged by iaac)'
+          - _sd_sc_owners['5'] == 'yes — iaac'
+        fail_msg: "Wrong ownership labels: {{ _sd_sc_owners }}"
+        quiet: true
+
+    - name: With no owner matchers, the SRM entry falls back to origin unknown
+      # The control: proves the SRM label above came from steamdeck_shortcut_owners and not from
+      # something else on the entry. set_fact, because setup_vars set_fact'd the name already.
+      ansible.builtin.set_fact:
+        steamdeck_shortcut_owners: []
+
+    - name: Re-run the role's attribution without matchers
+      ansible.builtin.include_role:
+        name: steamdeck
+        tasks_from: _shortcut_owners
+
+    - name: Nothing is claimed for an owner without evidence
+      ansible.builtin.assert:
+        that:
+          - _sd_sc_owners['0'] == 'no — origin unknown (not tagged by iaac)'
+          - _sd_sc_owners['5'] == 'yes — iaac'
+          - (_sd_sc_owners | length) == 6
+        fail_msg: "Without matchers: {{ _sd_sc_owners }}"
+        quiet: true
+
+    # ---------------------------------------------------------------------------------------
+    # The DST play tile's script: rendered by the role's OWN templates, then parsed and linted.
+    # It runs on the Deck with nobody at a terminal, so a syntax error would surface only as a
+    # tile that silently does nothing.
+    # ---------------------------------------------------------------------------------------
+    - name: A scratch directory for the rendered scripts
+      ansible.builtin.tempfile:
+        state: directory
+        suffix: steamdeck-dst-play
+      register: _play_dir
+
+    - name: Fixture values
+      # set_fact, NOT a task-level vars: — the role's setup_vars already set_fact these names to
+      # their defaults, and set_fact outranks task vars (DST_HOST would render empty).
+      ansible.builtin.set_fact:
+        steamdeck_dst_control_target: molecule-host
+        steamdeck_dst_control_url: http://dst.example.invalid:8091/
+        steamdeck_dst_play_host: dst.example.invalid
+        _sd_dst_play_password: Molecule1
+
+    - name: Render the play script and its config
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../../templates/{{ item }}.j2"
+        dest: "{{ _play_dir.path }}/{{ item }}"
+        mode: "0700"
+      loop: [dst-play.sh, dst-play.env]
+
+    - name: The script parses (bash -n)
+      ansible.builtin.command:
+        argv: [bash, -n, "{{ _play_dir.path }}/dst-play.sh"]
+      changed_when: false
+
+    - name: The script passes shellcheck
+      ansible.builtin.command:
+        argv: [shellcheck, -s, bash, "{{ _play_dir.path }}/dst-play.sh"]
+      changed_when: false
+
+    - name: The config is valid shell and carries the fixture values
+      ansible.builtin.command:
+        argv:
+          - bash
+          - -c
+          - '. "$1" && printf "%s|%s|%s" "$DST_HOST" "$DST_PORT" "$DST_PASSWORD"'
+          - _
+          - "{{ _play_dir.path }}/dst-play.env"
+      register: _play_env
+      changed_when: false
+
+    - name: Assert the config round-trips
+      ansible.builtin.assert:
+        that: [_play_env.stdout == 'dst.example.invalid|10999|Molecule1']
+        fail_msg: "Rendered config read back as '{{ _play_env.stdout }}'"
+        quiet: true
+
+    - name: The script joins with -applaunch, and carries no join mod and no steam:// launch
+      # The CODE lines only (comments explain why steam://run is never used, and quote it). The
+      # steam://run/<appid>//<args>/ form raises a Steam prompt on every launch, and a pending
+      # prompt silently blocks later launches; the join-mod path is no longer used.
+      ansible.builtin.command:
+        argv:
+          - "{{ ansible_python_interpreter | default('python3') }}"
+          - -c
+          - |
+            import json, sys
+            code = [l for l in open(sys.argv[1]) if not l.lstrip().startswith("#")]
+            body = "".join(code)
+            print(json.dumps({
+                "applaunch": 'steam -applaunch "$APPID" +connect "${ip}:${DST_PORT}" +password "$DST_PASSWORD"' in body,
+                "steam_url": "steam://" in body,
+                "mod": any(w in body for w in ("iaac-join", "ForceEnableMod", "modsettings", "c_connect")),
+                "server_count": '"${URL}/healthz"' in body,
+            }))
+          - "{{ _play_dir.path }}/dst-play.sh"
+      register: _play_code
+      changed_when: false
+
+    - name: Assert the join route
+      ansible.builtin.assert:
+        that:
+          - (_play_code.stdout | from_json).applaunch
+          - not (_play_code.stdout | from_json).steam_url
+          - not (_play_code.stdout | from_json).mod
+          - (_play_code.stdout | from_json).server_count
+        fail_msg: "dst-play.sh join route: {{ _play_code.stdout }}"
+        quiet: true
+
+    # ---------------------------------------------------------------------------------------
+    # Removal BY OMISSION — the role's OWN merge (files/steam_shortcuts_merge.py build()).
+    # Inventory removes a tile by no longer declaring it; this proves an omitted TAGGED entry is
+    # removed, an UNTAGGED one (Steam ROM Manager's) survives, and re-running is a no-op.
+    # ---------------------------------------------------------------------------------------
+    - name: Run the role's own merge over a fixture with one tile omitted
+      ansible.builtin.command:
+        argv:
+          - "{{ ansible_python_interpreter | default('python3') }}"
+          - -c
+          - |
+            import json, sys
+            sys.path.insert(0, sys.argv[1])
+            from steam_shortcuts_merge import build
+            tag = {"0": "iaac"}
+            existing = {
+                "0": {"AppName": "RetroArch", "Exe": '"/x/launchers/retroarch.sh"', "appid": -1},
+                "1": {"AppName": "Keep me", "Exe": '"/k.sh"', "StartDir": "", "LaunchOptions": "",
+                      "icon": "", "appid": -2, "tags": tag},
+                "2": {"AppName": "Wake: host", "Exe": '"/w.sh"', "appid": -3, "tags": tag},
+            }
+            desired = [{"name": "Keep me", "exe": '"/k.sh"'}]
+            merged, changes = build(desired, existing)
+            again, changes2 = build(desired, merged)
+            print(json.dumps({
+                "changes": changes,
+                "names": sorted(e["AppName"] for e in merged.values()),
+                "indices": sorted(merged),
+                "keep_appid": [e["appid"] for e in merged.values() if e["AppName"] == "Keep me"],
+                "rerun_changes": changes2,
+            }))
+          - "{{ playbook_dir }}/../../files"
+      register: _omit
+      changed_when: false
+
+    - name: Assert the omitted tile is removed, the SRM tile kept, and a re-run changes nothing
+      ansible.builtin.assert:
+        that:
+          - "(_omit.stdout | from_json)['changes'] == ['remove Wake: host']"
+          - "(_omit.stdout | from_json)['names'] == ['Keep me', 'RetroArch']"
+          - "(_omit.stdout | from_json)['indices'] == ['0', '1']"
+          - "(_omit.stdout | from_json)['keep_appid'] == [-2]"
+          - "(_omit.stdout | from_json)['rerun_changes'] == []"
+        fail_msg: "Removal by omission: {{ _omit.stdout }}"
+        quiet: true

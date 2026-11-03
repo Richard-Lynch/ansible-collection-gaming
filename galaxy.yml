@@ -1,0 +1,42 @@
+# Copyright: (c) 2026, Richard Lynch
+# GNU General Public License v3.0+ (see https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+namespace: richard_lynch
+name: gaming
+version: 1.0.0
+readme: README.md
+authors:
+  - Richard Lynch
+description: >-
+  Gaming roles: a Steam Deck managed in user space (library tiles, artwork, Moonlight, EmuDeck, Decky plugins, wake-on-LAN), Decky Loader plugin installs, Steam Workshop subscriptions, Don't Starve Together client mods, and an on-demand Don't Starve Together dedicated server under rootless podman.
+license:
+  - GPL-3.0-or-later
+tags:
+  - gaming
+  - steamdeck
+  - steam
+  - linux
+dependencies:
+  ansible.posix: ">=2.0.0"
+  community.general: ">=10.0.0"
+  richard_lynch.common: ">=1.0.0,<2.0.0"
+repository: https://github.com/Richard-Lynch/ansible-collection-gaming
+documentation: https://github.com/Richard-Lynch/ansible-collection-gaming/blob/main/README.md
+homepage: https://github.com/Richard-Lynch/ansible-collection-gaming
+issues: https://github.com/Richard-Lynch/ansible-collection-gaming/issues
+build_ignore:
+  - .ansible-lint
+  - ci
+  - configured_roles.txt
+  - roles/*/defaults/SKIP
+  - .github
+  - .gitignore
+  - collections.galaxy
+  - devkit.toml
+  - dist
+  - export.manifest
+  - tests/output
+  - roles/*/meta/argument_specs.py
+  - roles/*/molecule
+  - "*.tar.gz"

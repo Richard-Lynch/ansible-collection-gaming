@@ -1,0 +1,62 @@
+---
+- name: Verify
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _save: /tmp/molecule-klei-dst-client/.local/share/Steam/steamapps/compatdata/322330/pfx/drive_c/users/steamuser/Documents/Klei/DoNotStarveTogether/1/client_save
+  tasks:
+    - name: Decode the written modindex with the role's own codec
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -c
+          - |
+            import json, sys
+            sys.path.insert(0, sys.argv[1])
+            from dst_modindex import decode, parse
+            print(json.dumps(parse(decode(open(sys.argv[2]).read()))))
+          - "{{ playbook_dir }}/../../files"
+          - "{{ _save }}/modindex"
+      register: _mi
+      changed_when: false
+
+    - name: Both declared mods are enabled, and the game's own keys survived
+      ansible.builtin.assert:
+        that:
+          - _m.known_mods['workshop-376333686'].enabled
+          - _m.known_mods['workshop-351325790'].enabled
+          - _m.known_api_version == 10
+          - _m.disable_special_event_warning == false
+        quiet: true
+      vars:
+        _m: "{{ _mi.stdout | from_json }}"
+
+    - name: The original was kept
+      ansible.builtin.stat:
+        path: "{{ _save }}/modindex.iaac-bak"
+      register: _bak
+
+    - name: Assert the backup exists
+      ansible.builtin.assert:
+        that: [_bak.stat.exists]
+        quiet: true
+
+    - name: The reset turned "loading" into the game's own "done", keeping its header
+      ansible.builtin.assert:
+        that:
+          - lookup('ansible.builtin.file', _save ~ '/boot_modindex') == 'KLEI     1 done'
+        quiet: true
+
+    - name: A marker already at "done" was left alone
+      ansible.builtin.stat:
+        path: "{{ _save | dirname | dirname }}/11111111/client_save/boot_modindex"
+        get_checksum: true
+        checksum_algorithm: sha1
+      register: _done_marker
+
+    - name: Assert it is byte-identical to what the converge wrote
+      ansible.builtin.assert:
+        that:
+          - _done_marker.stat.exists
+          - _done_marker.stat.checksum == ('KLEI     1 done' | hash('sha1'))
+        quiet: true

@@ -1,0 +1,165 @@
+---
+# ENTRYPOINT: install the "wake a host" script, so a Game Mode tile can power on a machine.
+#
+# WHAT THIS IS FOR. A streaming host (steamdeck_wake_target) that is left fully powered off. Waking it meant reaching a controller — a laptop, a shell, a play —
+# which is exactly the wrong shape for "sit down on the sofa and start playing". This puts the
+# wake on the Deck itself, as a tile.
+#
+# WRITES TO $HOME ONLY, AND THAT IS DELIBERATE. SteamOS seals its rootfs and REPLACES it on major
+# updates, so anything outside /home is written sand. The two other durable-install entrypoints
+# here (wol_persist, battery) must live in /etc/systemd/system and therefore unseal, re-seal, and
+# need a sudo password. This needs none of that: the script is a user file and the packet it sends
+# needs no privileges, so the whole entrypoint runs unprivileged and survives an image update.
+#
+# NO SUDO IS THE REQUIREMENT, not a convenience. sudo on SteamOS prompts for a password, and a
+# Game Mode tile has nobody at a terminal to type one — so a wake that needed root could not be
+# a tile at all.
+#
+# THE TILE IS SEPARATE. This installs the script; `steamdeck_action=shortcuts` is what puts it in
+# the library, from `steamdeck_managed_shortcuts` in inventory. Two actions because the script is
+# cheap and idempotent while the shortcuts merge has to stop Steam — pairing them would mean
+# killing Steam to re-render a shell script.
+
+- name: Apply role defaults
+  ansible.builtin.include_tasks: setup_vars.yml
+
+- name: Assert a wake target was declared
+  # Every one of these is site configuration and belongs in inventory — a MAC or a
+  # broadcast address defaulted in the role would make this silently wrong on a second device and
+  # right here only by coincidence. Asserted together so a half-declared target fails before
+  # anything is written, naming the missing key rather than rendering a script that sends a
+  # malformed packet into the wrong subnet.
+  ansible.builtin.assert:
+    that:
+      - steamdeck_wake_target | default('') | length > 0
+      - steamdeck_wake_mac | default('') is match('^([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$')
+      - steamdeck_wake_broadcast | default('') | length > 0
+      - steamdeck_wake_probe_host | default('') | length > 0
+    fail_msg: >-
+      Declare the wake target in inventory: steamdeck_wake_target (the inventory NAME),
+      steamdeck_wake_mac (the target's WIRED NIC — a WiFi MAC cannot be woken),
+      steamdeck_wake_broadcast (the broadcast address of the target's own VLAN, e.g.
+      192.0.2.255 — a magic packet does not cross subnets), and steamdeck_wake_probe_host
+      (where to probe to decide whether the wake actually worked).
+      Got target='{{ steamdeck_wake_target | default('(unset)') }}'
+      mac='{{ steamdeck_wake_mac | default('(unset)') }}'
+      broadcast='{{ steamdeck_wake_broadcast | default('(unset)') }}'
+      probe='{{ steamdeck_wake_probe_host | default('(unset)') }}'.
+    quiet: true
+
+- name: Note whether this Deck is currently on the target's segment
+  # INSTALLING IS ALWAYS SAFE AND ALWAYS ALLOWED. An earlier version of this entrypoint ASSERTED
+  # the Deck held an address in the target's subnet and refused the whole play otherwise, which
+  # conflated two different things: Ansible reaches this device over SSH on any VLAN, so the
+  # install works fine over WiFi — it is only SENDING that needs the right segment. Refusing to
+  # install while undocked meant the tile could not be set up from the sofa, which is the one
+  # place it is wanted.
+  #
+  # So this is a REPORT, not a gate. The script itself decides at run time: when the Deck is on
+  # the target's subnet it broadcasts directly, and otherwise it asks the endpoint below.
+  ansible.builtin.set_fact:
+    _sd_wake_on_segment: >-
+      {{ _sd_wake_prefix in (ansible_all_ipv4_addresses
+         | map('regex_replace', '\.\d+$', '') | list) }}
+  vars:
+    _sd_wake_prefix: "{{ steamdeck_wake_broadcast | regex_replace('\\.\\d+$', '') }}"
+
+- name: Derive the script location
+  # From ansible_env.HOME rather than a hardcoded /home/deck: the user this belongs to is
+  # inventory's business, and the same role runs against a second handheld unchanged.
+  # ~/.local/bin is on the default PATH and is a user directory, so nothing here needs the rootfs
+  # unsealed or a sudo password.
+  ansible.builtin.set_fact:
+    _sd_wake_script: "{{ ansible_env.HOME }}/.local/bin/iaac-wake-host.sh"
+
+- name: Ensure the script directory exists
+  ansible.builtin.file:
+    path: "{{ _sd_wake_script | dirname }}"
+    state: directory
+    mode: "0755"
+
+- name: Install the wake script
+  ansible.builtin.template:
+    src: wake-host.sh.j2
+    dest: "{{ _sd_wake_script }}"
+    mode: "0755"
+  register: _sd_wake_installed
+
+- name: Check the wake endpoint is actually usable from this device
+  # PROVES THE FALLBACK PATH RATHER THAN ASSUMING IT. The script's undocked route is only as good
+  # as this Deck's ability to reach the endpoint by the name it was given — which depends on DNS
+  # resolving on the Deck's current VLAN and on the endpoint being up.
+  #
+  # Hits /healthz rather than /wake/<target>: the check must not actually wake anything. The
+  # endpoint reports the allowlist it LOADED, so this also catches an endpoint that is running
+  # but does not know the target this Deck is about to ask for.
+  #
+  # Runs only when an endpoint is declared and the Deck is off-segment — on-segment the fallback
+  # is irrelevant and probing it would be noise.
+  ansible.builtin.uri:
+    url: "{{ steamdeck_wake_endpoint | regex_replace('/wake/.*$', '') }}/healthz"
+    return_content: true
+    timeout: 8
+  register: _sd_wake_endpoint_check
+  failed_when: false
+  changed_when: false
+  when:
+    - steamdeck_wake_endpoint | default('') | length > 0
+    - not (_sd_wake_on_segment | bool)
+
+- name: Report whether the endpoint can be used
+  # Deliberately NOT an assert: a Deck that is usually docked is perfectly usable with no
+  # endpoint access, so failing the install would be wrong. It reports loudly instead.
+  #
+  # Checks the PARSED allowlist, not just the status: an endpoint answering 200 that has never
+  # heard of this target would otherwise pass and then 404 on the first undocked press. `.json`
+  # is read only after confirming it parsed, so "could not read it" can never present as
+  # "the target is missing".
+  ansible.builtin.debug:
+    msg: >-
+      {{ 'ENDPOINT OK: ' ~ steamdeck_wake_endpoint ~ ' is reachable and serves '
+         ~ (_sd_wake_endpoint_check.json.targets | join(', ')) ~ '.'
+         if (_sd_wake_endpoint_check.status | default(0)) == 200
+            and _sd_wake_endpoint_check.json is defined
+            and steamdeck_wake_target in (_sd_wake_endpoint_check.json.targets | default([]))
+         else ('ENDPOINT UNUSABLE (status='
+               ~ (_sd_wake_endpoint_check.status | default('no response') | string)
+               ~ '): undocked wakes will FAIL. '
+               ~ ('It does not serve ' ~ steamdeck_wake_target ~ ' — it serves '
+                  ~ (_sd_wake_endpoint_check.json.targets | default([]) | join(', ') | default('nothing', true))
+                  ~ '. Add the target to the endpoint allowlist.'
+                  if _sd_wake_endpoint_check.json is defined
+                  else 'Check the endpoint is running, and that this name resolves on the current VLAN.')) }}
+  when:
+    - steamdeck_wake_endpoint | default('') | length > 0
+    - not (_sd_wake_on_segment | bool)
+
+- name: Report
+  ansible.builtin.debug:
+    msg:
+      - >-
+        {{ 'Installed' if (_sd_wake_installed is changed) else 'Already current' }}:
+        {{ _sd_wake_script }}
+      - >-
+        Wakes {{ steamdeck_wake_target }} ({{ steamdeck_wake_mac }}) by broadcasting to
+        {{ steamdeck_wake_broadcast }}:{{ steamdeck_wake_port }}, then probes
+        {{ steamdeck_wake_probe_host }}:{{ steamdeck_wake_probe_port }} for up to
+        {{ steamdeck_wake_timeout }}s and reports a real outcome.
+      - >-
+        THIS DECK IS CURRENTLY {{ 'ON' if (_sd_wake_on_segment | bool) else 'NOT ON' }} the
+        target's segment ({{ ansible_all_ipv4_addresses | join(', ') }}), so a wake right now
+        would go {{ 'DIRECTLY' if (_sd_wake_on_segment | bool)
+                    else ('via the endpoint ' ~ steamdeck_wake_endpoint) }}.
+        The script re-decides this on every launch, so docking or undocking needs no re-run.
+      - >-
+        {{ 'NO ENDPOINT DECLARED: undocked wakes will refuse rather than send into nowhere.'
+           if (steamdeck_wake_endpoint | default('') | length == 0)
+           else ('Undocked fallback: GET ' ~ steamdeck_wake_endpoint
+                 ~ ' — no key and no credential; the endpoint''s own allowlist decides'
+                 ~ ' what may be woken.') }}
+      - >-
+        The Game Mode tile is NOT created here — declare it in steamdeck_managed_shortcuts and
+        run steamdeck_action=shortcuts steamdeck_apply=true (that one stops Steam).
+      - >-
+        Run log on the device: $HOME/.local/share/iaac-wake-host.log — the only record of what a
+        tile launch did, since Game Mode gives it no terminal.

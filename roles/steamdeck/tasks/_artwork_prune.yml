@@ -1,0 +1,213 @@
+---
+# INTERNAL: steamdeck_artwork_action=prune — delete ORPHANED non-Steam grid art. Included by
+# artwork.yml, which has already read shortcuts.vdf (_sd_sc) and located the grid (_sd_grid).
+#
+# The cleanup half of artwork: restore only ever ADDS, so every removed or renamed tile leaves
+# its art behind under an appid nothing references. files/steam_artwork_prune.py carries the
+# orphan definition (read its docstring); this file supplies the PROTECTED set, gates on it, backs
+# up what the artwork tree cannot restore, deletes, and reads back.
+#
+# Preview by default. Deletes only with steamdeck_apply=true.
+
+- name: Start the protected set empty
+  # set_fact persists for the whole play: without this a second include would start from the
+  # first one's list (RESOLVE-01's shape).
+  ansible.builtin.set_fact:
+    _sd_prune_protect: []
+    _sd_prune_shortcuts: "{{ (_sd_sc.shortcuts | default({})) | dict2items }}"
+
+- name: HARD GATE — every shortcut carries an appid
+  # An entry without one would contribute nothing to the protected set, and its art (keyed by
+  # whatever appid Steam generated for it) would classify as an orphan.
+  ansible.builtin.assert:
+    that:
+      - (_sd_prune_shortcuts | rejectattr('value.appid', 'defined') | list | length) == 0
+    fail_msg: >-
+      {{ _sd_prune_shortcuts | rejectattr('value.appid', 'defined') | map(attribute='value.AppName')
+         | list }} have no appid in shortcuts.vdf; refusing to decide what is orphaned.
+    quiet: true
+
+- name: Protect EVERY current shortcut by its UNSIGNED appid, whoever owns it
+  # Built from ALL entries, not from artwork.yml's name-keyed map: two shortcuts with the same
+  # AppName collapse to one key there, and the other one's art would be pruned. Steam stores the
+  # appid SIGNED; files carry the UNSIGNED form.
+  ansible.builtin.set_fact:
+    _sd_prune_protect: >-
+      {{ _sd_prune_protect + [
+           (item.value.appid | int) + 4294967296
+           if (item.value.appid | int) < 0 else (item.value.appid | int)
+         ] }}
+  loop: "{{ _sd_prune_shortcuts }}"
+  loop_control:
+    label: "{{ item.value.AppName | default('?') }}"
+
+- name: HARD GATE — the protected set holds one appid per shortcut, all in the shortcut range
+  # Protective omission: the prune deletes everything in the shortcut range EXCEPT this set, so
+  # the set must be proven complete before it is trusted. A shortcut appid below 2**31 would also
+  # falsify the orphan definition's range test (every appid Steam generates for a shortcut has
+  # the high bit set), so it stops the run rather than being reasoned around.
+  ansible.builtin.assert:
+    that:
+      - (_sd_prune_protect | length) == (_sd_prune_shortcuts | length)
+      - (_sd_prune_protect | length) == (_sd_sc.count | default(_sd_prune_shortcuts | length) | int)
+      - (_sd_prune_protect | select('lt', 2147483648) | list | length) == 0
+      - (_sd_prune_protect | select('ge', 4294967296) | list | length) == 0
+    fail_msg: >-
+      protected={{ _sd_prune_protect }} from {{ _sd_prune_shortcuts | length }} shortcut(s)
+      (vdf count {{ _sd_sc.count | default('?') }}). Every shortcut must contribute exactly one
+      appid in [2**31, 2**32).
+    quiet: true
+
+- name: Hash the vendored artwork on the controller
+  # An orphan byte-identical to a vendored file can be restored from the tree; anything else is
+  # backed up before it is deleted. Content, not name: the vendored tree is keyed by shortcut name
+  # and a device file may have been edited after it was vendored.
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_playbook_python }}"
+      - "{{ role_path }}/files/steam_artwork_prune.py"
+      - --hash-tree
+      - "{{ steamdeck_artwork_dir }}"
+  delegate_to: localhost
+  become: false
+  register: _sd_prune_vendored
+  changed_when: false
+
+- name: Classify the grid directory (preview)
+  ansible.builtin.script:
+    cmd: >-
+      steam_artwork_prune.py
+      --grid-dir '{{ _sd_grid }}'
+      --protect '{{ _sd_prune_protect | to_json }}'
+      --vendor-hashes '{{ _sd_prune_vendored.stdout | trim }}'
+    executable: /usr/bin/python3
+  register: _sd_prune_raw
+  changed_when: false
+
+- name: Parse the classification
+  ansible.builtin.set_fact:
+    _sd_prune: "{{ _sd_prune_raw.stdout[_sd_prune_raw.stdout.find('{') :] | from_json }}"
+
+- name: HARD GATE — the delete set is only orphaned shortcut art
+  # Re-checked HERE, not trusted from the script: no orphan may be a protected appid or a Steam
+  # game appid, and an empty protected set never deletes anything — with no shortcuts read, every
+  # piece of non-Steam art would look orphaned.
+  ansible.builtin.assert:
+    that:
+      - (_sd_prune.orphan_appids | default([]) | intersect(_sd_prune_protect) | length) == 0
+      - (_sd_prune.orphan_appids | default([]) | select('lt', 2147483648) | list | length) == 0
+      - (_sd_prune.orphans | default([]) | length) == 0 or (_sd_prune_protect | length) > 0
+    fail_msg: >-
+      Refusing: orphan appids {{ _sd_prune.orphan_appids | default([]) }} overlap the protected
+      set {{ _sd_prune_protect }}, include a Steam game appid (< 2**31), or no shortcut was read.
+    quiet: true
+
+- name: Report the prune plan
+  ansible.builtin.debug:
+    msg: "{{ _report.splitlines() }}"
+  vars:
+    _report: |
+      ===== ARTWORK PRUNE {{ '(APPLY)' if (steamdeck_apply | bool) else '(preview — steamdeck_apply=true deletes)' }} =====
+      grid dir            : {{ _sd_grid }}
+      shortcuts protected : {{ _sd_prune_protect | length }}  {{ _sd_prune_protect | sort }}
+      with art on device  : {{ _sd_prune.current_appids_with_art | default([]) | length }}
+      files               : {{ _sd_prune.counts | default({}) }}
+      suffixes seen       : {{ _sd_prune.suffixes_seen | default({}) }}
+      steam game appids   : {{ _sd_prune.steam_game_appids | default([]) }}
+      unknown (kept)      : {{ _sd_prune.unknown_names | default([]) }}
+      ORPHANS             : {{ _sd_prune.orphans | default([]) | length }} file(s), {{ _sd_prune.orphan_bytes | default(0) }} bytes
+      orphan appids       : {{ _sd_prune.orphan_appids | default([]) }}
+      not in the tree     : {{ _sd_prune.unvendored_orphans | default([]) | length }} (backed up before deleting)
+
+- name: Back up, delete and read back
+  when:
+    - steamdeck_apply | bool
+    - (_sd_prune.orphans | default([]) | length) > 0
+  block:
+    - name: Name this run's backup directory
+      ansible.builtin.set_fact:
+        _sd_prune_backup: >-
+          {{ (steamdeck_artwork_backup_dir
+              if (steamdeck_artwork_backup_dir | length) > 0
+              else lookup('ansible.builtin.env', 'HOME') ~ '/.cache/iaac/steamdeck-grid-backup')
+             ~ '/' ~ inventory_hostname ~ '/' ~ now(utc=true, fmt='%Y%m%dT%H%M%SZ') }}
+
+    - name: Back up orphans the artwork tree cannot restore
+      ansible.builtin.fetch:
+        src: "{{ _sd_grid }}/{{ item }}"
+        dest: "{{ _sd_prune_backup }}/{{ item }}"
+        flat: true
+        validate_checksum: true
+      loop: "{{ _sd_prune.unvendored_orphans | default([]) }}"
+
+    - name: Read the backups back on the controller
+      ansible.builtin.stat:
+        path: "{{ _sd_prune_backup }}/{{ item.name }}"
+        checksum_algorithm: sha256
+      delegate_to: localhost
+      become: false
+      loop: "{{ _sd_prune.orphans | selectattr('vendored', 'false') | list }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: _sd_prune_backed
+
+    - name: HARD GATE — every unvendored orphan is safely backed up, byte for byte
+      ansible.builtin.assert:
+        that:
+          - (_sd_prune_backed.results | default([]) | length) == (_sd_prune.unvendored_orphans | default([]) | length)
+          - (_sd_prune_backed.results | default([]) | rejectattr('stat.exists') | list | length) == 0
+          - >-
+            (_sd_prune_backed.results | default([]) | map(attribute='stat.checksum') | list)
+            == (_sd_prune_backed.results | default([]) | map(attribute='item.sha256') | list)
+        fail_msg: "A backup in {{ _sd_prune_backup }} is missing or differs from the device; nothing deleted."
+        quiet: true
+
+    - name: Delete the orphans (only the previewed set)
+      ansible.builtin.script:
+        cmd: >-
+          steam_artwork_prune.py
+          --grid-dir '{{ _sd_grid }}'
+          --protect '{{ _sd_prune_protect | to_json }}'
+          --vendor-hashes '{{ _sd_prune_vendored.stdout | trim }}'
+          --expect '{{ _sd_prune.orphans | map(attribute='name') | list | to_json }}'
+          --apply
+        executable: /usr/bin/python3
+      register: _sd_prune_del
+      changed_when: (_sd_prune_del.stdout[_sd_prune_del.stdout.find('{') :] | from_json).changed | bool
+
+    - name: Read the grid back
+      ansible.builtin.script:
+        cmd: >-
+          steam_artwork_prune.py
+          --grid-dir '{{ _sd_grid }}'
+          --protect '{{ _sd_prune_protect | to_json }}'
+        executable: /usr/bin/python3
+      register: _sd_prune_after_raw
+      changed_when: false
+
+    - name: Parse the read-back
+      ansible.builtin.set_fact:
+        _sd_prune_after: "{{ _sd_prune_after_raw.stdout[_sd_prune_after_raw.stdout.find('{') :] | from_json }}"
+
+    - name: HARD GATE — no orphans remain, and everything kept is untouched
+      # Kept = every file that was not an orphan, fingerprinted by size + mtime + sha256 before
+      # and after. Compared as whole maps, so a kept file that vanished, changed or appeared fails.
+      ansible.builtin.assert:
+        that:
+          - (_sd_prune_after.orphans | length) == 0
+          - _sd_prune_after.kept == _sd_prune.kept
+          - >-
+            (_sd_prune_del.stdout[_sd_prune_del.stdout.find('{') :] | from_json).deleted | sort
+            == (_sd_prune.orphans | map(attribute='name') | sort)
+        fail_msg: >-
+          Read-back: {{ _sd_prune_after.orphans | length }} orphan(s) remain; kept files
+          {{ 'UNCHANGED' if _sd_prune_after.kept == _sd_prune.kept else 'CHANGED' }}.
+        quiet: true
+
+    - name: Report what was pruned
+      ansible.builtin.debug:
+        msg:
+          - "deleted: {{ _sd_prune.orphans | length }} file(s), {{ _sd_prune.orphan_bytes }} bytes"
+          - "backed up first: {{ _sd_prune.unvendored_orphans | length }} file(s) -> {{ _sd_prune_backup }}"
+          - "kept, verified unchanged: {{ _sd_prune_after.kept | length }} file(s)"
+          - "Steam need not restart: the deleted art belonged to appids no tile shows."

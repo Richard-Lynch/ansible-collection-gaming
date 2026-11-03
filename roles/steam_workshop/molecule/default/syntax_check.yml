@@ -1,0 +1,9 @@
+---
+# Parsed (never run) by verify.yml's `ansible-playbook --syntax-check`: a static `roles:` entry, so
+# every task file of the role is loaded and must parse.
+- name: Apply steam_workshop
+  hosts: localhost
+  gather_facts: false
+  roles:
+    - role: steam_workshop
+      steam_workshop_steamid: "76561197960265729"

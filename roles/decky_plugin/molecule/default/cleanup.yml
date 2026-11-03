@@ -1,0 +1,14 @@
+---
+# Cleanup - the same root prepare.yml starts clean, removed BEFORE prepare and AFTER verify (see the
+# test_sequence in molecule.yml), so a run starts from nothing and leaves nothing whatever the
+# previous run did and whatever molecule's "already prepared" flag says.
+- name: Cleanup - remove the fixture release and home
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _root: /tmp/molecule-decky-plugin
+  tasks:
+    - name: Remove the fixture root
+      ansible.builtin.file:
+        path: "{{ _root }}"
+        state: absent

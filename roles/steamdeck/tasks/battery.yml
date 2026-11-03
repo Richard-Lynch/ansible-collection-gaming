@@ -1,0 +1,177 @@
+---
+# ENTRYPOINT: cap the battery charge level.
+#
+# WHY. Lithium cells degrade fastest when held at a high state of charge, and a Deck that is
+# docked and charging most of the time while rarely being deep-cycled has precisely the duty cycle
+# that wears a battery out. The cost is runtime you are mostly not using; set
+# steamdeck_battery_limit=100 before a trip to lift it.
+#
+# The sysfs node resets to 0 (no limit) on every boot, so this installs the same kind of
+# boot-time unit as the Wake-on-LAN work — and for the same reason it survives an OS update:
+# /etc/systemd/system/*.service is on Valve's atomic-update keep list.
+#
+# VIA steamosctl, WHICH IS VALVE'S OWN SUPPORTED INTERFACE. An earlier version of this used the
+# raw sysfs node, on the mistaken basis that steamosctl exposed only TDP — it does not: the verb
+# is `set-max-charge-level`, and grepping its help for "battery" misses it because the verb says
+# "charge-level". It needs NO root, NO session bus and NO rootfs unseal, which makes it strictly
+# better than writing sysfs from a privileged unit.
+#
+# The boot unit is still installed, because neither interface persists across a reboot — the EC
+# value resets and something has to reapply it. The unit now calls steamosctl too, so there is
+# one mechanism rather than two that can disagree.
+
+- name: Apply role defaults
+  ansible.builtin.include_tasks: setup_vars.yml
+
+- name: Validate the requested limit
+  # Below ~50 the device spends its life nearly flat for no additional battery-life benefit;
+  # above 100 is meaningless. A typo here would otherwise be written straight to hardware.
+  ansible.builtin.assert:
+    that:
+      - (steamdeck_battery_limit | int) >= 50
+      - (steamdeck_battery_limit | int) <= 100
+    fail_msg: >-
+      steamdeck_battery_limit must be 50-100 (got {{ steamdeck_battery_limit }}).
+      100 means no limit.
+    quiet: true
+
+- name: Check the steamosctl interface
+  # Preferred over sysfs: it is Valve's own supported API, needs no privilege, and cannot write
+  # to the wrong hwmon device. The sysfs node is read alongside it purely as corroboration.
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -o pipefail
+      if command -v steamosctl >/dev/null 2>&1 && \
+         [ "$(steamosctl --help 2>&1 | grep -c 'set-max-charge-level' || true)" -gt 0 ]; then
+        printf 'iface=steamosctl\n'
+        # -?[0-9]+ — the MINUS MATTERS. steamosctl reports "Max charge level: -1" for no limit,
+        # and a [0-9]+$ pattern strips the sign and yields 1, which is a real percentage and a
+        # plausible-looking one. The play then reported "currently 1" for a device with no cap
+        # at all.
+        printf 'current=%s\n' "$(steamosctl get-max-charge-level 2>/dev/null | grep -oE '\-?[0-9]+$')"
+        printf 'minimum=%s\n' "$(steamosctl suggested-minimum-charge-limit 2>/dev/null | grep -oE '\-?[0-9]+$')"
+      else
+        printf 'iface=sysfs\n'
+        for h in /sys/class/hwmon/hwmon*; do
+          [ "$(cat "$h/name" 2>/dev/null)" = "steamdeck_hwmon" ] || continue
+          printf 'current=%s\n' "$(cat "$h/max_battery_charge_level" 2>/dev/null)"
+        done
+      fi
+  register: _sd_batt
+  changed_when: false
+
+- name: Assert an interface exists
+  ansible.builtin.assert:
+    that:
+      - "'iface=' in _sd_batt.stdout"
+      - "'current=' in _sd_batt.stdout"
+    fail_msg: >-
+      Neither steamosctl's set-max-charge-level nor a steamdeck_hwmon charge node is available.
+      This SteamOS or kernel does not expose a charge limit at all.
+    quiet: true
+
+- name: Set the limit now
+  # No become: steamosctl reaches the system daemon over D-Bus and the policy permits an
+  # unprivileged user, so this needs neither sudo nor a session bus, even over plain SSH.
+  ansible.builtin.command:
+    argv: [steamosctl, set-max-charge-level, "{{ steamdeck_battery_limit }}"]
+  changed_when: true
+  when:
+    - steamdeck_apply | bool
+    - "'iface=steamosctl' in _sd_batt.stdout"
+
+- name: Report the plan
+  ansible.builtin.debug:
+    msg: >-
+      {{ 'Setting' if (steamdeck_apply | bool) else 'WOULD set' }} the charge limit to
+      {{ steamdeck_battery_limit }}% (currently
+      {{ 'no limit (' ~ _sd_current ~ ')' if _sd_current in ['0', '-1'] else _sd_current ~ '%' }}).
+      {{ '' if (steamdeck_apply | bool) else 'Re-run with steamdeck_apply=true.' }}
+  vars:
+    # -?\d+ to match the shell above. BOTH 0 and -1 mean "no limit": the sysfs node uses 0,
+    # steamosctl reports -1, and which one answers depends on the interface detected.
+    _sd_current: "{{ _sd_batt.stdout | regex_search('current=(-?\\d+)', '\\1') | first | default('?') }}"
+
+- name: Install the battery-limit unit and re-seal the rootfs
+  when: steamdeck_apply | bool
+  block:
+    - name: Make the rootfs writable
+      # INSIDE the block, so the `always:` re-seal below covers this task too. Previously this
+      # ran BEFORE the block: if it succeeded and the play was then interrupted — a failed task,
+      # Ctrl-C, a lost connection — the rootfs was left unsealed with nothing to re-seal it, and
+      # nothing warns about that state afterwards.
+      #
+      # Strictly this is belt-and-braces: /etc is a var-backed overlay and writable regardless.
+      # But /etc/systemd/system is not writable while the rootfs is sealed, and leaving the
+      # system in a state SteamOS does not expect is worse than the small cost of toggling it.
+      ansible.builtin.command:
+        cmd: steamos-readonly disable
+      become: true
+      changed_when: true
+
+    - name: Install the unit
+      ansible.builtin.template:
+        src: battery-limit.service.j2
+        dest: "/etc/systemd/system/{{ steamdeck_battery_unit }}"
+        mode: "0644"
+        owner: root
+        group: root
+      become: true
+
+    - name: Enable and start it
+      ansible.builtin.systemd_service:
+        name: "{{ steamdeck_battery_unit }}"
+        enabled: true
+        state: restarted
+        daemon_reload: true
+      become: true
+
+  always:
+    - name: Re-seal the rootfs
+      ansible.builtin.command:
+        cmd: steamos-readonly enable
+      become: true
+      changed_when: true
+
+- name: Read the limit back
+  # From the hardware, not from the unit's exit status — a sysfs write to an unsupported value
+  # is accepted and ignored, so only the read-back proves it took.
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -o pipefail
+      # Read through steamosctl where available, and from sysfs as well: if the two ever
+      # disagree, something else is writing the value and that is worth seeing.
+      if command -v steamosctl >/dev/null 2>&1; then
+        printf 'limit=%s\n' "$(steamosctl get-max-charge-level 2>/dev/null | grep -oE '[0-9]+$')"
+      fi
+      for h in /sys/class/hwmon/hwmon*; do
+        [ "$(cat "$h/name" 2>/dev/null)" = "steamdeck_hwmon" ] || continue
+        [ -e "$h/max_battery_charge_level" ] && printf 'sysfs=%s\n' "$(cat "$h/max_battery_charge_level")"
+      done
+      printf 'unit=%s\n' "$(systemctl is-enabled {{ steamdeck_battery_unit }} 2>/dev/null)"
+      printf 'capacity=%s\n' "$(cat /sys/class/power_supply/BAT*/capacity 2>/dev/null | head -1)"
+  register: _sd_batt_after
+  changed_when: false
+  when: steamdeck_apply | bool
+
+- name: Assert the limit took effect
+  ansible.builtin.assert:
+    that:
+      - "('limit=' ~ steamdeck_battery_limit) in _sd_batt_after.stdout"
+      - "'unit=enabled' in _sd_batt_after.stdout"
+    fail_msg: >-
+      The charge limit did not take: {{ _sd_batt_after.stdout_lines | join(' ') }}
+      — expected limit={{ steamdeck_battery_limit }}.
+    quiet: true
+  when: steamdeck_apply | bool
+
+- name: Report
+  ansible.builtin.debug:
+    msg:
+      - "{{ _sd_batt_after.stdout_lines }}"
+      - >-
+        Charge capped at {{ steamdeck_battery_limit }}%. If the battery is already above that it
+        will simply stop charging and drift down — that is expected, not a fault.
+  when: steamdeck_apply | bool

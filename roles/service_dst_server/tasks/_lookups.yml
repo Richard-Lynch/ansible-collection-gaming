@@ -1,0 +1,70 @@
+---
+# Resolve the cluster's credentials. A caller-supplied VALUE (dst_cluster_token /
+# dst_cluster_password, e.g. an Ansible Vault variable) is used as given; only when it is empty is
+# the declared 1Password ITEM resolved — through the CACHED lookup, so a value is fetched once and
+# every later run is free and silent.
+#
+# no_log on EVERY task here: the token authenticates the server to Klei as the account holder,
+# and a failed lookup dumps its arguments.
+
+- name: Decide which credentials come from 1Password
+  ansible.builtin.set_fact:
+    _dst_token_lookup: "{{ not (dst_offline | bool) and (dst_cluster_token | length == 0) }}"
+    _dst_password_lookup: >-
+      {{ (dst_cluster_password | length == 0) and (dst_cluster_password_item | length > 0) }}
+  no_log: true
+
+- name: HARD GATE — the credentials' vault is named
+  ansible.builtin.assert:
+    that:
+      - dst_secret_vault | length > 0
+    fail_msg: >-
+      dst_secret_vault is empty: name the 1Password vault holding dst_cluster_token_item /
+      dst_cluster_password_item in inventory, or pass dst_cluster_token / dst_cluster_password
+      directly.
+    quiet: true
+  when: (_dst_token_lookup | bool) or (_dst_password_lookup | bool)
+
+- name: Resolve the Klei cluster token
+  ansible.builtin.set_fact:
+    _dst_token: >-
+      {{ lookup('richard_lynch.common.onepassword_cached', dst_cluster_token_item,
+                field=dst_cluster_token_field, vault=dst_secret_vault) | trim
+         if (_dst_token_lookup | bool) else (dst_cluster_token | trim) }}
+  no_log: true
+  when: not (dst_offline | bool)
+
+- name: Resolve the join password
+  ansible.builtin.set_fact:
+    _dst_password: >-
+      {{ lookup('richard_lynch.common.onepassword_cached', dst_cluster_password_item,
+                field=dst_cluster_password_field, vault=dst_secret_vault) | trim
+         if (_dst_password_lookup | bool) else (dst_cluster_password | trim) }}
+  no_log: true
+
+- name: HARD GATE — a declared credential must not resolve to empty
+  # `op read` of an item whose title contains a slash returns an EMPTY string rather than an
+  # error, and an empty token starts a server Klei refuses with a message only in
+  # server_log.txt. Refuse here, where the cause is still visible.
+  ansible.builtin.assert:
+    that:
+      - (dst_offline | bool) or (_dst_token | default('') | length > 0)
+      - (not (_dst_password_lookup | bool)) or (_dst_password | length > 0)
+    fail_msg: >-
+      A declared credential resolved to an EMPTY value (token item
+      '{{ dst_cluster_token_item }}', password item '{{ dst_cluster_password_item }}', vault
+      '{{ dst_secret_vault }}'). Check the item and field names; an item whose title contains a
+      slash must be referenced by its id.
+    quiet: true
+  no_log: true
+
+- name: Derive the inter-shard cluster key
+  # [SHARD] cluster_key authenticates secondaries to the master. The link is bound to loopback,
+  # so this guards against nothing on the network — but it must be stable (a changed key makes
+  # every secondary refuse the master) and should not be a guessable constant. Derived from the
+  # token where there is one, so it changes exactly when the server's identity does.
+  ansible.builtin.set_fact:
+    _dst_cluster_key: >-
+      {{ (dst_instance ~ ':' ~ dst_cluster_dir_name ~ ':' ~ (_dst_token | default('offline')))
+         | hash('sha256') | truncate(32, true, '', 0) }}
+  no_log: true

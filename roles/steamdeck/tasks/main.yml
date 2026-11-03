@@ -1,0 +1,89 @@
+---
+# DISPATCHER. Selects an entrypoint by `steamdeck_action`.
+#
+#   probe             survey the device and report what is worth managing   (read-only)
+#   status            live power, thermals, fan and storage                 (read-only)
+#   rootfs_report     is the immutable rootfs intact, and what is in it?    (read-only)
+#   emudeck_report    EmuDeck's declared config, and what a rerun would do   (read-only)
+#   emudeck           enforce EmuDeck settings; 0600 the credential file   (writes $HOME)
+#   moonlight_report  Moonlight's settings and paired hosts, redacted       (read-only)
+#   moonlight         apply Moonlight stream settings                       (writes $HOME)
+#   shortcuts_report  non-Steam shortcuts in the Steam library              (read-only)
+#   shortcuts         the declared Game Mode tiles (+ optional stream tiles) (writes $HOME, STOPS STEAM)
+#   remove_app        delete a non-Steam app, its prefix and installers     (DESTRUCTIVE)
+#   artwork           back up / restore / prune Steam grid art               (writes $HOME)
+#   wake_report       why does it keep waking up? every wake source + history  (read-only)
+#   wol_report        can this device be woken over the network?            (read-only by default)
+#   wake_host  install the $HOME script that wakes a host (writes, no sudo)
+#   steam_restart_host  install the $HOME script that restarts the host's Game Mode Steam (writes, no sudo)
+#   dst_control       install iaac-dst.sh (server start/stop/status; the play tile calls it) (writes, no sudo)
+#   dst_play          install the "DST: play" tile's script: start, -applaunch +connect, stop-when-empty (writes, no sudo)
+#   wol_persist       make WoL survive reboots AND SteamOS updates          (writes /etc)
+#   wol_disarm_wifi   unarm WiFi PCIe wakeup — it can only cost              (writes sysfs)
+#   wol_disarm_internal  unarm the Deck's OWN USB hubs — they break sleep   (writes sysfs)
+#   wol_verify        REBOOT and prove WoL survived it unattended           (REBOOTS!)
+#   close_game        close the running Steam game, and prove it closed     (kills a game)
+#   battery           cap the charge level to slow battery wear             (writes /etc)
+#   decky_plugins     remove Decky plugins, cleanly                         (writes $HOME)
+#   decky_settings    enforce settings inside Decky plugins                 (writes $HOME)
+#   css_themes        install/configure CSS Loader themes                   (writes $HOME)
+#   all               probe + moonlight_report                              (read-only)
+#
+# SCOPE IS DELIBERATELY NARROW. SteamOS replaces its rootfs on major updates and requires a
+# password for sudo, so anything system-level is both unattended-impossible and impermanent.
+# This role stays in user space, where what it writes survives.
+
+- name: Resolve the action before checking it
+  # setup_vars.yml resolves the defaults, but only once an entrypoint includes it, which is after
+  # this dispatcher has chosen one. Without this line an unset action failed the assert below
+  # instead of running the documented read-only default (probe).
+  ansible.builtin.set_fact:
+    steamdeck_action: "{{ steamdeck_action | default(steamdeck_action__default) }}"
+
+- name: Assert a known action was requested
+  ansible.builtin.assert:
+    that:
+      - steamdeck_action in _actions
+    fail_msg: >-
+      Unknown steamdeck_action '{{ steamdeck_action | default('(unset)') }}'.
+      Choose one of: {{ _actions | join(', ') }}.
+    quiet: true
+  vars:
+    _actions:
+      - probe
+      - moonlight_report
+      - moonlight
+      - shortcuts_report
+      - shortcuts
+      - remove_app
+      - artwork
+      - wake_report
+      - wol_report
+      - wake_host
+      - steam_restart_host
+      - dst_control
+      - dst_play
+      - wol_persist
+      - wol_verify
+      - wol_disarm_wifi
+      - wol_disarm_internal
+      - reboot
+      - close_game
+      - battery
+      - status
+      - decky_plugins
+      - decky_settings
+      - css_themes
+      - rootfs_report
+      - emudeck_report
+      - emudeck
+      - all
+
+- name: Run the requested action
+  ansible.builtin.include_tasks: "{{ steamdeck_action }}.yml"
+  when: steamdeck_action != 'all'
+
+- name: Run the read-only survey
+  ansible.builtin.include_tasks: "{{ item }}.yml"
+  loop: [probe, status, rootfs_report, moonlight_report, shortcuts_report]
+  when: steamdeck_action == 'all'

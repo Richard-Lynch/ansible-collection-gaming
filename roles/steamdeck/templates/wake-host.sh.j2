@@ -1,0 +1,148 @@
+#!/bin/bash
+# Wake a host on this Deck's own VLAN with a Wake-on-LAN magic packet.
+#
+# MANAGED BY ANSIBLE — roles/steamdeck/templates/wake-host.sh.j2. Edits here are overwritten.
+{#
+  WHY THE DECK SENDS THIS ITSELF rather than asking another host to. A magic packet is a LAYER-2
+  BROADCAST and does not cross a VLAN boundary, so it must originate on the target's own segment.
+  The Deck's dock and {{ steamdeck_wake_target }} are both on {{ steamdeck_wake_broadcast | regex_replace('\.255$', '.0/24') }},
+  which means this device is already in the right broadcast domain — no relay, no SSH to a sender,
+  no dependency on the controller or on a relay being up. That is the whole reason this is a
+  20-line script and not a service.
+
+  WHY PYTHON AND NOT wakeonlan/etherwake. Neither ships on SteamOS, the rootfs is immutable, and
+  anything installed into it is discarded by the next atomic update. python3 is present in the
+  base image, and a magic packet is 102 bytes — six 0xFF bytes then the MAC sixteen times — so
+  building it by hand is less fragile than depending on a package that will not survive.
+
+  NO SUDO. An unprivileged UDP broadcast to port 9 needs no privileges, which matters because sudo
+  on SteamOS requires a password and this has to work from a Game Mode tile with nobody at a
+  terminal.
+
+  The packet is UNACKNOWLEDGED, so sending it proves nothing about whether the target received it.
+  This script therefore PROBES afterwards and reports a real outcome — a tile that always says
+  "sent!" would be indistinguishable from one that works.
+#}
+set -uo pipefail
+
+MAC="{{ steamdeck_wake_mac }}"
+BROADCAST="{{ steamdeck_wake_broadcast }}"
+PORT="{{ steamdeck_wake_port }}"
+PROBE_HOST="{{ steamdeck_wake_probe_host }}"
+PROBE_PORT="{{ steamdeck_wake_probe_port }}"
+WAIT="{{ steamdeck_wake_timeout }}"
+TARGET="{{ steamdeck_wake_target }}"
+
+# Endpoint used when this Deck is NOT on the target's segment (i.e. undocked). An HTTP GET,
+# because it needs no key, no credential and no leg of its own — see the segment check below.
+WAKE_URL="{{ steamdeck_wake_endpoint }}"
+
+# Game Mode gives a tile no terminal, so the only durable record of what happened is a log.
+# Written under $HOME because /var is immutable and not writable here.
+LOG="${HOME}/.local/share/iaac-wake-host.log"
+mkdir -p "$(dirname "$LOG")"
+
+say() {
+    # To stdout AND the log: stdout is useful when run from a terminal in Desktop Mode, the log
+    # is the only thing that survives a tile launch.
+    printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$*" | tee -a "$LOG"
+}
+
+say "wake: target=${TARGET} mac=${MAC} broadcast=${BROADCAST}:${PORT}"
+
+# ---------------------------------------------------------------------------------------------
+# WHICH SEGMENT ARE WE ON? This decides HOW the packet is sent, at run time rather than at
+# install time, because the answer changes every time the Deck is docked or undocked.
+#
+# A magic packet is a layer-2 broadcast and cannot cross a VLAN boundary. Docked, this device is
+# on the target's own segment and can broadcast directly. Over WiFi it is on a different VLAN,
+# and a direct broadcast would SUCCEED and reach nothing — unacknowledged UDP, so completely
+# silent. That is the trap this whole feature lives next to.
+#
+# Undocked, it asks a wake endpoint instead (steamdeck_wake_endpoint) — an HTTP GET to a relay
+# that holds a leg on every VLAN and so can broadcast onto the target's segment on this Deck's
+# behalf. No key, no credential, nothing to rotate: the endpoint's own allowlist decides what may
+# be woken, so the grant here is "ask for a declared target" and nothing more.
+#
+# Directed broadcast on the router would avoid the hop entirely, where the router offers it; many
+# expose only ICMP broadcast-ping control, not UDP forwarding.
+# ---------------------------------------------------------------------------------------------
+PREFIX="${BROADCAST%.*}."
+if ip -4 -o addr show 2>/dev/null | grep -q " ${PREFIX}"; then
+    ON_SEGMENT=1
+    say "on the target's segment — broadcasting directly"
+else
+    ON_SEGMENT=0
+    say "NOT on ${PREFIX}0/24 (probably undocked) — asking ${WAKE_URL}"
+fi
+
+if [ "$ON_SEGMENT" -eq 0 ] && [ -z "$WAKE_URL" ]; then
+    # REFUSE RATHER THAN SEND. With no endpoint declared and no leg on the target's segment, a
+    # broadcast would succeed and reach nothing — the silent failure this script exists to avoid.
+    # Saying so is strictly better than a tile that reports success and leaves the box off.
+    say "CANNOT WAKE: not on ${PREFIX}0/24 and no endpoint declared (steamdeck_wake_endpoint)."
+    say "  Dock the Deck, or declare a wake endpoint."
+    exit 1
+fi
+
+if [ "$ON_SEGMENT" -eq 0 ]; then
+    # ENDPOINT PATH. The GET makes the relay broadcast from its leg on the target's segment.
+    #
+    # --fail so an HTTP 404 (unknown target) or 500 is an error here rather than a cheerful
+    # "sent" — without it curl exits 0 having received the error page, which is exactly the
+    # false-success shape the rest of this script is built to avoid. -sS keeps it quiet but still
+    # prints the reason on failure.
+    if curl --fail -sS -m 10 "${WAKE_URL}" >>"$LOG" 2>&1; then
+        printf '\n' >>"$LOG"
+        say "endpoint accepted the request (unacknowledged UDP — this does not mean it arrived)"
+    else
+        say "FAILED to reach the wake endpoint ${WAKE_URL} — see the log above for curl's reason."
+        exit 1
+    fi
+elif python3 - "$MAC" "$BROADCAST" "$PORT" <<'PYEOF'
+import socket
+import sys
+
+mac, broadcast, port = sys.argv[1], sys.argv[2], int(sys.argv[3])
+
+# Accept both : and - separators, reject anything that is not 6 octets. A malformed MAC would
+# otherwise build a wrong-length packet that sends successfully and wakes nothing.
+cleaned = mac.replace(":", "").replace("-", "")
+if len(cleaned) != 12:
+    sys.exit(f"malformed MAC {mac!r}")
+
+payload = b"\xff" * 6 + bytes.fromhex(cleaned) * 16
+if len(payload) != 102:
+    sys.exit(f"built a {len(payload)}-byte packet, expected 102")
+
+sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+try:
+    sock.sendto(payload, (broadcast, port))
+finally:
+    sock.close()
+PYEOF
+then
+    say "packet sent (unacknowledged — this does not mean it arrived)"
+else
+    say "FAILED to send the packet"
+    exit 1
+fi
+
+# THE ONLY HONEST RESULT. Poll until the host answers or the budget runs out.
+say "waiting up to ${WAIT}s for ${PROBE_HOST}:${PROBE_PORT}"
+deadline=$(( $(date +%s) + WAIT ))
+while [ "$(date +%s)" -lt "$deadline" ]; do
+    # bash's own /dev/tcp, bounded by coreutils `timeout` so a filtered port cannot hang past the
+    # loop's deadline. SteamOS ships no netcat at all, so a `nc` probe can never answer here.
+    # shellcheck disable=SC2016  # $1/$2 are the inner shell's arguments, expanded there
+    if timeout 2 bash -c 'exec 3<>"/dev/tcp/$1/$2"' _ "$PROBE_HOST" "$PROBE_PORT" 2>/dev/null; then
+        say "AWAKE: ${TARGET} answered on ${PROBE_HOST}:${PROBE_PORT}"
+        exit 0
+    fi
+    sleep 3
+done
+
+say "DID NOT WAKE: ${TARGET} still silent after ${WAIT}s. Check (1) the NIC wake flag on the"
+say "  target, (2) BIOS 'Power On By PCI-E/PCI' enabled and 'ErP Ready' disabled for S5 wake."
+exit 1

@@ -1,0 +1,11 @@
+---
+galaxy_info:
+  namespace: richard_lynch
+  author: Richard Lynch
+  description: >-
+    Turn Don't Starve Together client mods on or off in the game's own mod state, for native Linux
+    installs and the Windows build under Proton.
+  license: GPL-3.0-or-later
+  min_ansible_version: "2.19"
+  galaxy_tags: [dontstarve, steam, gaming, mods]
+dependencies: []

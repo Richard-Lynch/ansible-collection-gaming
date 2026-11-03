@@ -1,0 +1,77 @@
+---
+# ENTRYPOINT: report the non-Steam shortcuts in the Steam library. Writes nothing.
+#
+# shortcuts.vdf is Valve's BINARY VDF — typed, length-prefixed, nested. `strings` recovers the
+# names and loses everything else (launch options, icons, tags, the Proton compat flags, the
+# generated appid), so this uses a real parser. That matters because the write path has to
+# round-trip every field it does not understand.
+
+- name: Apply role defaults
+  ansible.builtin.include_tasks: setup_vars.yml
+
+- name: Locate the Steam user directory
+  # Steam namespaces per-user config by a numeric account id. Discovered rather than hardcoded:
+  # it differs per account, and a wrong guess writes shortcuts into a profile nobody uses.
+  ansible.builtin.find:
+    paths: "{{ ansible_env.HOME }}/.steam/steam/userdata"
+    patterns: "shortcuts.vdf"
+    recurse: true
+    file_type: file
+  register: _sd_vdf
+
+- name: Assert exactly one shortcuts file was found
+  # More than one means more than one Steam account on the device, and picking arbitrarily would
+  # edit whichever sorted first. That needs a human decision, not a guess.
+  ansible.builtin.assert:
+    that:
+      - (_sd_vdf.files | length) == 1
+    fail_msg: >-
+      Expected one shortcuts.vdf, found {{ _sd_vdf.files | length }}:
+      {{ _sd_vdf.files | map(attribute='path') | list | join(', ') }}.
+      Multiple Steam accounts — name the one to manage with steamdeck_steam_userdir.
+    quiet: true
+  when: steamdeck_steam_userdir | length == 0
+
+- name: Note the shortcuts path
+  ansible.builtin.set_fact:
+    _sd_shortcuts_path: >-
+      {{ steamdeck_steam_userdir ~ '/config/shortcuts.vdf'
+         if (steamdeck_steam_userdir | length) > 0
+         else (_sd_vdf.files | map(attribute='path') | first) }}
+
+- name: Read the shortcuts
+  ansible.builtin.script:
+    cmd: "steam_shortcuts.py --path '{{ _sd_shortcuts_path }}' --mode read"
+    executable: /usr/bin/python3
+  register: _sd_sc_raw
+  changed_when: false
+  check_mode: false # a read: under --check the report must still have something to parse
+
+- name: Parse the shortcuts
+  ansible.builtin.set_fact:
+    _sd_sc: "{{ _sd_sc_raw.stdout[_sd_sc_raw.stdout.find('{') :] | from_json }}"
+
+- name: Attribute each shortcut to its owner
+  ansible.builtin.include_tasks: _shortcut_owners.yml
+
+- name: Report
+  ansible.builtin.debug:
+    msg: "{{ _report.splitlines() }}"
+  vars:
+    _report: |
+      ===== NON-STEAM SHORTCUTS ({{ _sd_sc.count | default(0) }}) =====
+      file: {{ _sd_shortcuts_path }}
+      {% for idx, sc in (_sd_sc.shortcuts | default({})).items() | sort(attribute='0') %}
+
+      [{{ idx }}] {{ sc.AppName | default('(unnamed)') }}
+          exe    : {{ sc.Exe | default('') }}
+          args   : {{ sc.LaunchOptions | default('(none)') }}
+          dir    : {{ sc.StartDir | default('') }}
+          icon   : {{ sc.icon | default('(none)') | default('(none)', true) }}
+          appid  : {{ sc.appid | default('?') }}
+          managed: {{ _sd_sc_owners[idx] }}
+      {% endfor %}
+
+      Only entries tagged 'iaac' are managed. Everything else is left alone — reconciling it would
+      delete another tool's (or a person's) work. The owner named on an unmanaged entry comes from
+      steamdeck_shortcut_owners matching its exe; "origin unknown" means nothing matched.

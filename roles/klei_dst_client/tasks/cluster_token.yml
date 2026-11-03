@@ -1,0 +1,82 @@
+---
+# Read a Klei cluster token from a device, for the caller to store in its own secret store.
+#
+# WHERE A TOKEN COMES FROM — ONLY THE WEBSITE NOW. accounts.klei.com/account/game/servers mints
+# one for the signed-in account; there is no API. The game's console command
+# TheNet:GenerateClusterToken() USED to write cluster_token.txt too, and is DEPRECATED: a mod
+# calling it at the main menu gets "GenerateClusterToken() is deprecated! Please visit
+# https://accounts.klei.com/account/game/servers" and nothing is written.
+#
+# So this looks in three places: the two client homes (a token an older client wrote there) and
+# ~/Downloads, where the site's "Download Settings" zip lands — unzipped, it is a cluster
+# directory holding cluster_token.txt. Run this entrypoint against localhost to collect a token
+# downloaded on the controller.
+#
+# no_log on every task that holds the value: it authenticates a server to Klei as the account.
+
+- name: Resolve declared options over their generated defaults
+  ansible.builtin.include_tasks: _resolve_defaults.yml
+
+- name: Derive the home directory
+  ansible.builtin.set_fact:
+    _kdc_home: "{{ klei_dst_client_home if klei_dst_client_home | length > 0 else ansible_env.HOME }}"
+
+- name: Find cluster tokens
+  # The two client homes (as main.yml) and ~/Downloads. depth 3 covers <zip dir>/<cluster>/ and a
+  # per-account subfolder. A path that does not exist is skipped, not an error.
+  ansible.builtin.find:
+    paths:
+      - "{{ _kdc_home }}/.klei/DoNotStarveTogether"
+      - "{{ _kdc_home }}/.local/share/Steam/steamapps/compatdata/322330/pfx/drive_c/users/steamuser/Documents/Klei/DoNotStarveTogether"
+      - "{{ _kdc_home }}/Downloads"
+    patterns: cluster_token.txt
+    recurse: true
+    depth: 3
+  register: _kdc_tokens
+
+- name: HARD GATE — a token must be on this device
+  ansible.builtin.assert:
+    that: [_kdc_tokens.files | length > 0]
+    fail_msg: >-
+      No cluster_token.txt on {{ inventory_hostname }}. Make one at
+      https://accounts.klei.com/account/game/servers?game=DontStarveTogether ("Add New Server",
+      then "Download Settings"), unzip it into ~/Downloads, and re-run against the host it was
+      downloaded on (localhost for the controller).
+    quiet: true
+
+- name: Pick the newest token
+  # Several may exist (older downloads, both installs); the most recently written is the one just
+  # downloaded.
+  ansible.builtin.set_fact:
+    _kdc_token_file: "{{ _kdc_tokens.files | sort(attribute='mtime') | last }}"
+
+- name: Read it
+  ansible.builtin.slurp:
+    src: "{{ _kdc_token_file.path }}"
+  register: _kdc_token_raw
+  no_log: true
+
+- name: Decode it
+  ansible.builtin.set_fact:
+    klei_dst_client_cluster_token: "{{ _kdc_token_raw.content | b64decode | trim }}"
+  no_log: true
+
+- name: HARD GATE — the file must hold one token, not an empty or multi-line file
+  # Checked on SHAPE only (non-empty, one line, no spaces, plausibly long): Klei does not
+  # document the format, so asserting a prefix would be a guess that could refuse a real token.
+  ansible.builtin.assert:
+    that:
+      - klei_dst_client_cluster_token | length >= 20
+      - klei_dst_client_cluster_token is not search('\s')
+    fail_msg: >-
+      {{ _kdc_token_file.path }} does not hold a single token ({{ klei_dst_client_cluster_token | length }}
+      characters after trimming). Download a fresh one from accounts.klei.com.
+    quiet: true
+  no_log: true
+
+- name: Report which token was read (never its value)
+  ansible.builtin.debug:
+    msg: >-
+      Read a {{ klei_dst_client_cluster_token | length }}-character cluster token from
+      {{ _kdc_token_file.path }}, written {{ '%Y-%m-%d %H:%M' | strftime(_kdc_token_file.mtime | int) }}
+      ({{ _kdc_tokens.files | length }} found).

@@ -1,0 +1,48 @@
+---
+# ENTRYPOINT: deploy the cluster's files, image, units and control endpoint.
+#
+#   dst_action=deploy
+#   dst_action=deploy dst_apply=true
+#
+# Never starts or restarts the server (see runtime.yml for why); reports when a running server is
+# behind the configuration it just wrote.
+
+- name: Cluster files
+  ansible.builtin.include_tasks: config.yml
+
+- name: Runtime
+  ansible.builtin.include_tasks: runtime.yml
+
+- name: Read whether the cluster is running
+  ansible.builtin.command:
+    argv:
+      [
+        systemctl,
+        --user,
+        show,
+        "{{ _dst_target }}",
+        --property=ActiveState,
+        --value,
+      ]
+  register: _dst_deploy_state
+  changed_when: false
+
+- name: Report
+  ansible.builtin.debug:
+    msg:
+      - "{{ 'APPLIED.' if dst_apply | bool else 'PREVIEW ONLY — re-run with dst_apply=true to write it.' }}"
+      - >-
+        Cluster '{{ dst_cluster_name }}' ({{ dst_cluster_dir_name }}) at {{ _dst_cluster_path }};
+        shards {{ _dst_enabled_shards | map(attribute='name') | join(' + ') }};
+        {{ _dst_mods | selectattr('enabled') | list | length }} enabled mod(s); image {{ _dst_image }}.
+      - "Files {{ 'changed' if _dst_config_changed else 'unchanged' }}; runtime {{ 'changed' if _dst_runtime_changed else 'unchanged' }}."
+      - >-
+        {{ ('The cluster is RUNNING the previous configuration. It reads its config only at start, '
+            ~ 'so restart it to apply (dst_action=restart — this drops anyone connected).')
+           if (_dst_deploy_state.stdout | trim == 'active' and (_dst_config_changed or _dst_runtime_changed) and dst_apply | bool)
+           else ('Cluster state: ' ~ (_dst_deploy_state.stdout | trim)
+                 ~ ('. Start it with dst_action=start, or from an allowlisted client.'
+                    if (_dst_deploy_state.stdout | trim) != 'active' else '.')) }}
+      - >-
+        World-generation settings apply only when a shard's world is FIRST generated; on an
+        existing save, changing worldgen_overrides changes the file and nothing in the world.

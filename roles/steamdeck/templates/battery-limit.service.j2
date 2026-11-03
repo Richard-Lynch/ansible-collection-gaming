@@ -1,0 +1,39 @@
+# {{ ansible_managed }}
+{#
+  Caps the battery charge level, re-applied at every boot.
+
+  WHY A LIMIT. Lithium cells degrade fastest held at a high state of charge, and a mostly-docked
+  Deck's duty cycle is the worst case for it: charging most of the time, rarely deep-cycled.
+  Capping the charge slows capacity loss at the cost of runtime you are mostly not using.
+
+  WHY A SERVICE. The sysfs node resets to 0 (no limit) on every boot. /etc/systemd/system/*.service
+  is preserved across SteamOS atomic updates by Valve's own keep list, so this survives both a
+  reboot and an OS update.
+
+  THE NODE IS FOUND BY DRIVER NAME, not by hwmon index. /sys/class/hwmon/hwmonN numbering is
+  assignment order and can change between boots; matching `steamdeck_hwmon` is stable.
+#}
+
+[Unit]
+Description=Cap battery charge at {{ steamdeck_battery_limit }}%
+After=multi-user.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# steamosctl first — Valve's supported interface, and it cannot write to the wrong device.
+# Falls back to the raw hwmon node found BY DRIVER NAME (never by index, which is assignment
+# order and changes between boots) for a SteamOS that lacks the verb.
+ExecStart=/usr/bin/bash -c '\
+  if command -v steamosctl >/dev/null 2>&1 && steamosctl set-max-charge-level {{ steamdeck_battery_limit }} >/dev/null 2>&1; then \
+    exit 0; \
+  fi; \
+  for h in /sys/class/hwmon/hwmon*; do \
+    [ "$(cat "$h/name" 2>/dev/null)" = "steamdeck_hwmon" ] || continue; \
+    [ -w "$h/max_battery_charge_level" ] || continue; \
+    echo {{ steamdeck_battery_limit }} > "$h/max_battery_charge_level"; \
+  done; \
+  exit 0'
+
+[Install]
+WantedBy=multi-user.target

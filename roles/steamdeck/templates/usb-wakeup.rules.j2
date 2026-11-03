@@ -1,0 +1,64 @@
+# {{ ansible_managed }}
+{#
+  Enable wakeup on every link a magic packet must traverse, AS EACH DEVICE APPEARS.
+
+  WHY A UDEV RULE AND NOT ONLY A BOOT SERVICE. `power/wakeup` resets to the driver default on
+  every device ADD, not merely on boot — so unplugging and replugging the dock silently
+  re-disables the chain mid-uptime, and the next magic packet is swallowed with nothing to
+  indicate why. A boot-time service cannot see that; a udev rule fires on both coldplug and
+  hotplug, which is the correct shape for this problem.
+
+  The companion service exists only because sysext/udev-coldplug ordering at boot is not
+  guaranteed — belt and braces, not duplication.
+
+  MATCHED BY VENDOR/PRODUCT ID, NEVER BY PATH. Bus addresses (2-1, 2-1.1, 0000:03:00.0) change
+  with which port the dock is in and can renumber across boots; hardcoding them produces a rule
+  that works until something moves.
+#}
+
+# The dock's USB Ethernet adapter — Realtek RTL8153, the device that receives the packet.
+ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="0bda", ATTR{idProduct}=="8153", ATTR{power/wakeup}="enabled"
+
+# The dock's internal hubs — Genesys Logic. Seen on a Steam Deck dock as 05e3:0610 and 05e3:0626;
+# matched on vendor alone so a different model in the same family still works.
+ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="05e3", ATTR{power/wakeup}="enabled"
+
+# The dock's hubs only. A root hub's driver is `usb`, NOT `hub`, so this does not reach the
+# Deck's own root hubs — and deliberately must not. See below.
+ACTION=="add", SUBSYSTEM=="usb", DRIVER=="hub", ATTR{power/wakeup}="enabled"
+
+# THE DECK'S OWN ROOT HUBS ARE DELIBERATELY NOT ARMED — this is the important line in the file.
+#
+# Matching the Linux Foundation vendor id (1d6b) to catch root hubs — tempting, because a
+# DRIVER=="hub" rule misses them — is right about the mechanism and wrong about the blast radius:
+# 1d6b is what the KERNEL presents every virtual root hub as, so such a rule arms all four — usb1/usb2 on the dock's controller (0000:04:00.3)
+# AND usb3/usb4 on the INTERNAL one (0000:04:00.4), which carries the Deck's built-in Steam
+# Controller. A gamepad signals activity constantly, so the machine can no longer stay asleep:
+# it suspends on Steam's idle timer and resumes 2-4 seconds later, every time. To a user that
+# reads as a handheld switching itself on by itself.
+#
+# THE EVIDENCE is wakeup_active_count (steamdeck_action=wake_report): the dock's bus (usb1/usb2)
+# stays at 0, while the internal bus (usb3/usb4, the gamepad) accounts for every wake.
+#
+# The dock does not need these. It enumerates as 2-1.1 — bus usb2, behind controller
+# 0000:04:00.3 — and is reached entirely by the vendor-matched rules above plus the PCI walk in
+# the companion service. Arming the root hubs bought nothing and cost the device its sleep.
+#
+# So: match the dock's hardware, never a class of device that includes this machine's own
+# internals. If a future dock needs its root hub armed, match THAT controller's path — not every
+# hub the kernel owns.
+
+# THE WIFI ADAPTER IS DELIBERATELY NOT ARMED.
+#
+# Enabling wakeup on the Qualcomm QCNFA765 "for completeness of the chain" is tempting and
+# wrong, because it can only cost and never pay: Wake-on-WiFi does not work
+# on this hardware at all — ath11k gates WoWLAN behind a device allowlist the Deck is not on —
+# while an armed PCIe wakeup source can still be triggered by ordinary link activity.
+#
+# Nor is it the usual cause of idle suspend/resume cycles with the dock disconnected: then the
+# wired chain this file arms is inactive, and Steam background recording or downloads are the
+# likelier candidates. Worth knowing, because the wrong explanation sends the next person to
+# edit this file.
+#
+# So: not armed, on the merits. Only the wired path can wake this device,
+# so only the wired path is armed.

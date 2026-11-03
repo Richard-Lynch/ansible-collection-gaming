@@ -1,0 +1,49 @@
+---
+# HARD GATE for every action that drives the runtime: the units and the control script must
+# exist. Without it, `systemctl --user start` of a missing target fails with "Unit dst.target not
+# found", which reads as a systemd problem rather than "you have not deployed".
+#
+# THE IMAGE IS REQUIRED ONLY WHERE IT IS USED. Include with `_dst_require_image: true` from
+# actions that RUN a container (start, update): their units name the image tag derived from the
+# role's current build inputs, so a role changed since the last deploy must be redeployed first.
+# Stop, status, backup and the rest must keep working on an out-of-date deploy — a stop that
+# demanded the current image would refuse to stop a runaway container after an edit to the role.
+
+- name: Read the deployed pieces
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - "{{ _dst_unit_dir }}/{{ _dst_target }}"
+    - "{{ _dst_unit_dir }}/{{ _dst_prepare_unit }}"
+    - "{{ _dst_dirs.bin }}/dst_control.py"
+    - "{{ _dst_dirs.state }}/control.json"
+  register: _dst_deployed
+
+- name: Is the declared image present?
+  ansible.builtin.command:
+    argv: ["{{ dst_podman }}", image, exists, "{{ _dst_image }}"]
+  register: _dst_deployed_image
+  changed_when: false
+  failed_when: _dst_deployed_image.rc not in [0, 1]
+
+- name: HARD GATE — the cluster must be deployed
+  ansible.builtin.assert:
+    that:
+      - _dst_deployed.results | rejectattr('stat.exists') | list | length == 0
+      - (not (_dst_require_image | default(false) | bool)) or _dst_deployed_image.rc == 0
+    fail_msg: >-
+      The cluster is not deployed as declared: missing
+      {{ _dst_deployed.results | rejectattr('stat.exists') | map(attribute='item') | list }}{{
+      (' and image ' ~ _dst_image ~ ' (the role changed since the last deploy)')
+      if _dst_deployed_image.rc != 0 else '' }}.
+      Run dst_action=deploy dst_apply=true first.
+    quiet: true
+
+- name: Note an out-of-date deploy
+  ansible.builtin.debug:
+    msg: >-
+      The role has changed since the last deploy (image {{ _dst_image }} is not built yet).
+      This action does not need it; run dst_action=deploy dst_apply=true before the next start.
+  when:
+    - not (_dst_require_image | default(false) | bool)
+    - _dst_deployed_image.rc != 0

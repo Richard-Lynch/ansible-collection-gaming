@@ -1,0 +1,78 @@
+---
+# Reconcile the account's Workshop subscriptions (files/steam_workshop.py). Runs where it is
+# called — the play targets localhost: the Web API is reached from the controller, and a
+# subscription is account-wide, so no device is involved.
+
+- name: Resolve declared options over their generated defaults
+  ansible.builtin.include_tasks: _resolve_defaults.yml
+
+- name: Check the constraints the argspec cannot enforce
+  ansible.builtin.include_tasks: _argspec_guards.yml
+
+- name: HARD GATE — the key's 1Password item and vault are named
+  ansible.builtin.assert:
+    that:
+      - steam_workshop_api_key_item | length > 0
+      - steam_workshop_secret_vault | length > 0
+    fail_msg: >-
+      Set steam_workshop_api_key_item (the 1Password item holding the account's Steam Web API key)
+      and steam_workshop_secret_vault (its vault) in inventory.
+    quiet: true
+
+- name: Resolve the Web API key
+  ansible.builtin.set_fact:
+    _sw_key: >-
+      {{ lookup('richard_lynch.common.onepassword_cached', steam_workshop_api_key_item,
+                field=steam_workshop_api_key_field, vault=steam_workshop_secret_vault) | trim }}
+  no_log: true
+
+- name: HARD GATE — the key must not be empty
+  # An empty key 403s every call, which would read as "the API refuses subscriptions".
+  ansible.builtin.assert:
+    that: [_sw_key | length > 0]
+    fail_msg: >-
+      '{{ steam_workshop_api_key_item }}' ({{ steam_workshop_api_key_field }}) read back EMPTY.
+      Mint the key at https://steamcommunity.com/dev/apikey and store it in 1Password there.
+    quiet: true
+  no_log: true
+
+- name: Build the reconciler's configuration
+  # Built HERE, not inline in the command: a multi-line expression in a folded (>-) scalar keeps
+  # the newlines of its more-indented lines and splits the command (`--apply` then runs as a
+  # separate shell command and the write silently never happens).
+  ansible.builtin.set_fact:
+    _sw_config:
+      api_base: "{{ steam_workshop_api_base }}"
+      steamid: "{{ steam_workshop_steamid }}"
+      items: "{{ steam_workshop_items }}"
+
+- name: Plan (and with steam_workshop_apply, subscribe and read back)
+  ansible.builtin.script:
+    cmd: "steam_workshop.py {{ _sw_config | to_json | quote }}{{ ' --apply' if steam_workshop_apply | bool else '' }}"
+    executable: "{{ ansible_playbook_python }}"
+  environment:
+    STEAM_WEBAPI_KEY: "{{ _sw_key }}"
+  # no_log: the key is in this task's environment, and a failure dumps the task's arguments.
+  # The output carries no secret and is printed by the next task.
+  no_log: true
+  register: _sw_run
+  changed_when: (_sw_run.stdout | from_json).applied | default(false)
+  failed_when: _sw_run.rc not in [0, 1]
+
+- name: Parse
+  ansible.builtin.set_fact:
+    _sw: "{{ _sw_run.stdout | from_json }}"
+
+- name: Report
+  ansible.builtin.debug:
+    msg:
+      - "{{ 'APPLIED' if _sw.applied else ('PLAN — set steam_workshop_apply=true to apply' if _sw.changed else 'Already as declared') }}"
+      - "{{ _sw['items'] | dict2items | map(attribute='value') | map(attribute='name') | zip(_sw['items'] | dict2items | map(attribute='value.action')) | list }}"
+
+- name: HARD GATE — every applied change is proven by the read-back
+  ansible.builtin.assert:
+    that: [_sw.unproven | length == 0]
+    fail_msg: >-
+      Steam accepted these but the read-back does not show them applied: {{ _sw.unproven }}.
+      A 200 from Subscribe is a request accepted, not a subscription.
+    quiet: true

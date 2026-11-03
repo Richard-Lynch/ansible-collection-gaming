@@ -1,0 +1,232 @@
+---
+# DEVICE: plan, then (apply only) converge the plugin directory and its config.
+#
+# OWNERSHIP FOLLOWS DECKY'S OWN LAYOUT, so a converge and Decky never fight. Decky (plugin.py,
+# v3.2.9) checks the plugin's TOP directory on every load: if it is not owned by root it chowns
+# the whole tree to the backend's user, then the top dir back to root, then chmod -R 755 — and it
+# separately chowns plugin.json to root. The resulting layout on a device: every plugin dir is
+# root:root 0755 with user-owned contents and a root-owned plugin.json. So this writes:
+#   <top dir>, plugin.json   -> decky_plugin_root_owner (root)        0755 / 0644
+#   everything else          -> the connecting user (deck)            0755 dirs / 0644 files
+# and Decky's check sees a root-owned top directory and leaves it alone.
+#
+# EXACT CONTENTS: files on the device that are not in the archive are removed, EXCEPT anything
+# under __pycache__ — Python's own byte cache, which the backend (running as the device user, who
+# owns py_modules) writes on import. Removing it would re-create it on the next start and make
+# every converge report a change.
+
+- name: Derive device paths and owners
+  # From the connecting user's facts (THE THIRD RULE), unless a test points at a fixture home.
+  ansible.builtin.set_fact:
+    _dp_home: "{{ decky_plugin_home if decky_plugin_home | length > 0 else ansible_env.HOME }}"
+    _dp_user: "{{ ansible_user_id }}"
+    _dp_gid: "{{ ansible_user_gid }}"
+    _dp_root_group: "{{ 0 if decky_plugin_root_owner == 'root' else ansible_user_gid }}"
+
+- name: Derive the plugin and settings directories
+  ansible.builtin.set_fact:
+    _dp_dir: "{{ _dp_home }}/homebrew/plugins/{{ decky_plugin_directory }}"
+    _dp_settings_dir: "{{ _dp_home }}/homebrew/settings/{{ decky_plugin_directory }}"
+
+- name: Is Decky Loader installed?
+  ansible.builtin.stat:
+    path: "{{ _dp_home }}/homebrew/plugins"
+  register: _dp_plugins_root
+
+- name: HARD GATE — Decky Loader must be installed
+  ansible.builtin.assert:
+    that: [_dp_plugins_root.stat.isdir | default(false)]
+    fail_msg: >-
+      {{ _dp_home }}/homebrew/plugins does not exist: Decky Loader is not installed on
+      {{ inventory_hostname }}. Install Decky first (it is not managed by this role).
+    quiet: true
+
+- name: Is the plugin already installed?
+  ansible.builtin.stat:
+    path: "{{ _dp_dir }}"
+  register: _dp_top
+
+- name: List what is installed now
+  ansible.builtin.find:
+    paths: "{{ _dp_dir }}"
+    recurse: true
+    hidden: true
+    file_type: any
+  register: _dp_found
+  when: _dp_top.stat.exists
+
+- name: Work out what is on the device but not in the archive
+  ansible.builtin.set_fact:
+    _dp_extras: >-
+      {{ (_dp_found.files | default([]) | map(attribute='path')
+          | map('relpath', _dp_dir) | list)
+         | difference(_dp_pkg.files + _dp_pkg.dirs)
+         | reject('search', '(^|/)__pycache__(/|$)')
+         | sort | list }}
+
+- name: Plan the directories
+  ansible.builtin.file:
+    path: "{{ _dp_dir }}/{{ item }}"
+    state: directory
+    owner: "{{ _dp_user }}"
+    group: "{{ _dp_gid }}"
+    mode: "0755"
+  loop: "{{ _dp_pkg.dirs }}"
+  check_mode: true
+  register: _dp_plan_dirs
+  when: _dp_top.stat.exists
+
+- name: Plan the files
+  ansible.builtin.copy:
+    src: "{{ _dp_pkg.package_dir }}/{{ item }}"
+    dest: "{{ _dp_dir }}/{{ item }}"
+    owner: "{{ decky_plugin_root_owner if item == 'plugin.json' else _dp_user }}"
+    group: "{{ _dp_root_group if item == 'plugin.json' else _dp_gid }}"
+    mode: "0644"
+  loop: "{{ _dp_pkg.files }}"
+  check_mode: true
+  register: _dp_plan_files
+  when: _dp_top.stat.exists
+
+- name: Plan the top directory
+  ansible.builtin.file:
+    path: "{{ _dp_dir }}"
+    state: directory
+    owner: "{{ decky_plugin_root_owner }}"
+    group: "{{ _dp_root_group }}"
+    mode: "0755"
+  check_mode: true
+  register: _dp_plan_top
+  when: _dp_top.stat.exists
+
+- name: Summarise the file plan
+  ansible.builtin.set_fact:
+    _dp_changed_items: >-
+      {{ (['(new install: every file)'] if not _dp_top.stat.exists else [])
+         + (['(top directory owner/mode)'] if (_dp_plan_top.changed | default(false)) else [])
+         + (_dp_plan_dirs.results | default([]) | selectattr('changed') | map(attribute='item') | map('regex_replace', '$', '/') | list)
+         + (_dp_plan_files.results | default([]) | selectattr('changed') | map(attribute='item') | list) }}
+
+- name: Read the config that is there now
+  ansible.builtin.stat:
+    path: "{{ _dp_settings_dir }}/{{ decky_plugin_config_file }}"
+    checksum_algorithm: sha256
+  register: _dp_config_now
+  when: decky_plugin_config | length > 0
+
+- name: Read the config that would be written
+  ansible.builtin.stat:
+    path: "{{ _dp_staging }}/packages/{{ _dp_pkg.sha256 }}/config-{{ inventory_hostname }}.json"
+    checksum_algorithm: sha256
+  register: _dp_config_want
+  delegate_to: localhost
+  become: false
+  when: decky_plugin_config | length > 0
+
+- name: Decide what changes
+  ansible.builtin.set_fact:
+    _dp_files_change: "{{ (_dp_changed_items + _dp_extras) | length > 0 }}"
+    _dp_config_change: >-
+      {{ decky_plugin_config | length > 0 and not (
+           _dp_config_now.stat.exists
+           and _dp_config_now.stat.checksum == _dp_config_want.stat.checksum
+           and _dp_config_now.stat.mode == decky_plugin_config_mode
+           and _dp_config_now.stat.pw_name == _dp_user) }}
+
+- name: Report the plan
+  ansible.builtin.debug:
+    msg: "{{ _report.splitlines() }}"
+  vars:
+    _report: |
+      ===== {{ 'APPLYING' if (decky_plugin_apply | bool) else 'PLAN (preview — nothing written)' }}: {{ decky_plugin_name }} {{ decky_plugin_version }} on {{ inventory_hostname }} =====
+      archive   {{ _dp_archive | basename }} sha256 {{ _dp_pkg.sha256 }} (matches the pin{{ ', and the release .sha256' if _dp_sidecar | length > 0 else '' }})
+      package   {{ _dp_pkg.files | length }} files, version {{ _dp_pkg.version | default('?', true) }}; backend runs as {{ _dp_runs_as }}
+      target    {{ _dp_dir }}{{ '' if _dp_top.stat.exists else ' (NOT INSTALLED YET)' }}
+      files     {{ ('to write: ' ~ (_dp_changed_items | join(', '))) if _dp_changed_items else 'up to date' }}
+      extras    {{ ('to remove: ' ~ (_dp_extras | join(', '))) if _dp_extras else 'none' }}
+      config    {{ (_dp_settings_dir ~ '/' ~ decky_plugin_config_file ~ (' — to write (mode ' ~ decky_plugin_config_mode ~ ', owner ' ~ _dp_user ~ ')' if _dp_config_change | bool else ' — up to date')) if decky_plugin_config | length > 0 else 'none declared' }}
+      restart   {{ ('Decky (' ~ decky_plugin_service ~ ') WILL be stopped for the write and started after — the Decky UI reloads; a running game is not stopped') if (_dp_files_change | bool and decky_plugin_restart | bool) else 'not needed' if not (_dp_files_change | bool) else 'disabled (decky_plugin_restart=false)' }}
+      {{ '' if (decky_plugin_apply | bool) else 'Re-run with decky_plugin_apply=true to write.' }}
+
+- name: Apply
+  when: decky_plugin_apply | bool
+  become: "{{ decky_plugin_become | bool }}"
+  block:
+    - name: Converge the plugin files with Decky stopped
+      when: _dp_files_change | bool
+      block:
+        - name: Stop Decky for the write
+          # Its watchdog would otherwise act on main.py / dist/index.js mid-copy.
+          ansible.builtin.systemd_service:
+            name: "{{ decky_plugin_service }}"
+            state: stopped
+          when: decky_plugin_restart | bool
+
+        - name: Top directory
+          ansible.builtin.file:
+            path: "{{ _dp_dir }}"
+            state: directory
+            owner: "{{ decky_plugin_root_owner }}"
+            group: "{{ _dp_root_group }}"
+            mode: "0755"
+
+        - name: Directories
+          ansible.builtin.file:
+            path: "{{ _dp_dir }}/{{ item }}"
+            state: directory
+            owner: "{{ _dp_user }}"
+            group: "{{ _dp_gid }}"
+            mode: "0755"
+          loop: "{{ _dp_pkg.dirs }}"
+
+        - name: Files
+          ansible.builtin.copy:
+            src: "{{ _dp_pkg.package_dir }}/{{ item }}"
+            dest: "{{ _dp_dir }}/{{ item }}"
+            owner: "{{ decky_plugin_root_owner if item == 'plugin.json' else _dp_user }}"
+            group: "{{ _dp_root_group if item == 'plugin.json' else _dp_gid }}"
+            mode: "0644"
+          loop: "{{ _dp_pkg.files }}"
+
+        - name: Remove what the archive does not contain
+          ansible.builtin.file:
+            path: "{{ _dp_dir }}/{{ item }}"
+            state: absent
+          loop: "{{ _dp_extras }}"
+
+      always:
+        - name: Start Decky again (always — a failed write must not leave the loader down)
+          ansible.builtin.systemd_service:
+            name: "{{ decky_plugin_service }}"
+            state: started
+          when: decky_plugin_restart | bool
+
+    - name: Settings directory
+      # Decky creates it (as the device user) on first load; created here too so the config can
+      # be written before that load.
+      ansible.builtin.file:
+        path: "{{ _dp_settings_dir }}"
+        state: directory
+        owner: "{{ _dp_user }}"
+        group: "{{ _dp_gid }}"
+        mode: "0755"
+      when: decky_plugin_config | length > 0
+
+    - name: Config
+      # The exact bytes the plugin's validator accepted in package.yml. No restart: Decky does not
+      # watch settings/, and the plugin re-reads it.
+      ansible.builtin.copy:
+        src: "{{ _dp_staging }}/packages/{{ _dp_pkg.sha256 }}/config-{{ inventory_hostname }}.json"
+        dest: "{{ _dp_settings_dir }}/{{ decky_plugin_config_file }}"
+        owner: "{{ _dp_user }}"
+        group: "{{ _dp_gid }}"
+        mode: "{{ decky_plugin_config_mode }}"
+      when: decky_plugin_config | length > 0
+
+- name: Verify the running backend
+  ansible.builtin.include_tasks: _probe.yml
+  vars:
+    _dp_wait: "{{ (decky_plugin_apply | bool) and (_dp_files_change | bool) and (decky_plugin_restart | bool) }}"
+    _dp_require: "{{ (decky_plugin_apply | bool) and (decky_plugin_restart | bool) }}"
+    _dp_require_config: "{{ decky_plugin_config | length > 0 }}"
+  when: (decky_plugin_apply | bool and decky_plugin_restart | bool) or not (decky_plugin_apply | bool)

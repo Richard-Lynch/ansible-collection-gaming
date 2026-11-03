@@ -1,0 +1,91 @@
+---
+# ENTRYPOINT: prove Wake-on-LAN actually survives a reboot. DESTRUCTIVE — it reboots the device.
+#
+# WHY THIS EXISTS RATHER THAN A FILE CHECK. Everything else about WoL persistence can be verified
+# without rebooting — the udev rule is on disk, the unit is enabled, the flags read `enabled`.
+# None of that proves the thing that matters, because the flags were set by the apply run itself.
+# The only honest test is: reboot, touch nothing, and read the flags back.
+#
+# So this deliberately does NOT re-apply anything between the reboot and the check. A play that
+# fixed the state it was about to measure would pass forever and prove nothing.
+
+- name: Apply role defaults
+  ansible.builtin.include_tasks: setup_vars.yml
+
+- name: Require explicit confirmation
+  # A reboot interrupts whatever the user is doing on the device. Gated on naming the action
+  # rather than a bare flag, so it cannot happen as a side effect of a broader run.
+  ansible.builtin.assert:
+    that:
+      - steamdeck_reboot_confirm | bool
+    fail_msg: >-
+      This REBOOTS the Steam Deck to prove WoL persistence. Set steamdeck_reboot_confirm=true
+      when the device is free.
+    quiet: true
+
+- name: Record the state before rebooting
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -o pipefail
+      printf 'boot_id=%s\n' "$(cat /proc/sys/kernel/random/boot_id)"
+      printf 'uptime=%s\n' "$(cut -d. -f1 /proc/uptime)"
+  register: _sd_pre_boot
+  changed_when: false
+
+- name: Reboot
+  ansible.builtin.reboot:
+    reboot_timeout: "{{ steamdeck_reboot_timeout | int }}"
+    msg: "Reboot by Ansible to verify Wake-on-LAN persistence"
+  become: true
+
+- name: Read the wakeup chain after the reboot
+  # NOTHING has re-applied anything at this point — no udev trigger, no service start by us. If
+  # these read `enabled`, it is because the persistence mechanism did its job unattended.
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -o pipefail
+      printf 'boot_id=%s\n' "$(cat /proc/sys/kernel/random/boot_id)"
+      printf 'uptime=%s\n' "$(cut -d. -f1 /proc/uptime)"
+      printf 'unit=%s\n' "$(systemctl is-enabled {{ steamdeck_wol_unit }} 2>/dev/null)"
+      printf 'rule=%s\n' "$([ -f /etc/udev/rules.d/{{ steamdeck_wol_udev_rule }} ] && echo present || echo MISSING)"
+      for iface in $(ls /sys/class/net | grep -v '^lo$'); do
+        d=$(readlink -f "/sys/class/net/$iface/device" 2>/dev/null) || continue
+        while [ -n "$d" ] && [ "$d" != "/" ]; do
+          [ -f "$d/power/wakeup" ] && printf '%s=%s\n' "$(basename "$d")" "$(cat "$d/power/wakeup")"
+          d=$(dirname "$d")
+        done
+      done
+  register: _sd_post_boot
+  changed_when: false
+
+- name: Assert the device really rebooted
+  # Guards against the reboot silently not happening — comparing boot_id rather than uptime,
+  # because a fast reboot can leave uptime looking plausible either way.
+  ansible.builtin.assert:
+    that:
+      - (_sd_post_boot.stdout | regex_search('boot_id=(\S+)', '\\1') | first) != (_sd_pre_boot.stdout | regex_search('boot_id=(\S+)', '\\1') | first)
+    fail_msg: >-
+      boot_id is unchanged — the device did not actually reboot, so this proves nothing.
+    quiet: true
+
+- name: Assert wakeup survived the reboot unattended
+  ansible.builtin.assert:
+    that:
+      - "'rule=present' in _sd_post_boot.stdout"
+      - "'unit=enabled' in _sd_post_boot.stdout"
+      - "'=disabled' not in _sd_post_boot.stdout"
+    fail_msg: >-
+      Wake-on-LAN did NOT survive the reboot: {{ _sd_post_boot.stdout_lines | join(' ') }}.
+      A link reading '=disabled' means a magic packet will be swallowed and the device cannot
+      be woken.
+    quiet: true
+
+- name: Report
+  ansible.builtin.debug:
+    msg:
+      - "{{ _sd_post_boot.stdout_lines }}"
+      - >-
+        Wake-on-LAN persistence CONFIRMED across a real reboot, with nothing re-applied in
+        between. The remaining proof is an end-to-end wake, which needs the device suspended.

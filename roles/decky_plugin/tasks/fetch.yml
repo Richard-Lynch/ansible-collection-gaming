@@ -1,0 +1,142 @@
+---
+# CONTROLLER: download the pinned release asset with the GitHub CLI the controller is already
+# signed in to. No new token: if the repo is private, `gh`'s own credential is what can read it.
+#
+# Every task here is delegate_to localhost + run_once: the archive is the same for every target,
+# and downloading it once per device would only multiply the network calls.
+#
+# A MISSING RELEASE IS A REPORT, NOT A CRASH, in preview — the inventory may pin a tag before CI
+# has published it. In apply it is a failure: there is nothing to install.
+
+- name: Assert decky_plugin_repo is set
+  ansible.builtin.assert:
+    that: [decky_plugin_repo | length > 0]
+    fail_msg: >-
+      decky_plugin_repo (OWNER/REPO) is required to download a release — or set
+      decky_plugin_archive to a local archive.
+    quiet: true
+
+- name: Is the GitHub CLI present and signed in?
+  ansible.builtin.command:
+    argv: [gh, auth, status, --hostname, github.com]
+  register: _dp_gh_auth
+  changed_when: false
+  failed_when: false
+  delegate_to: localhost
+  run_once: true
+  become: false
+
+- name: HARD GATE — gh must be installed and authenticated on the controller
+  # rc is None/127-ish when the binary is absent (the command module reports a failure with
+  # msg "No such file"), 1 when it is present and not logged in.
+  ansible.builtin.assert:
+    that: [_dp_gh_auth.rc | default(1) == 0]
+    fail_msg: >-
+      The GitHub CLI is {{ 'not installed' if 'No such file' in (_dp_gh_auth.msg | default(''))
+      else 'not signed in to github.com' }} on the controller. Install it (https://cli.github.com) and
+      run `gh auth login` once — this role downloads the private release with gh's own credential.
+    quiet: true
+  delegate_to: localhost
+  run_once: true
+
+- name: Look up the pinned release
+  ansible.builtin.command:
+    argv:
+      - gh
+      - release
+      - view
+      - "{{ decky_plugin_version }}"
+      - -R
+      - "{{ decky_plugin_repo }}"
+      - --json
+      - tagName,assets
+  register: _dp_release
+  changed_when: false
+  failed_when: false
+  delegate_to: localhost
+  run_once: true
+  become: false
+
+- name: Classify the lookup
+  ansible.builtin.set_fact:
+    _dp_release_found: >-
+      {{ _dp_release.rc == 0
+         and _dp_asset in ((_dp_release.stdout | from_json).assets | map(attribute='name') | list) }}
+    _dp_release_missing: "{{ _dp_release.rc != 0 and 'release not found' in (_dp_release.stderr | lower) }}"
+    _dp_has_sidecar: >-
+      {{ _dp_release.rc == 0
+         and (_dp_asset ~ '.sha256') in ((_dp_release.stdout | from_json).assets | map(attribute='name') | list) }}
+  run_once: true
+
+- name: Any OTHER lookup failure is an error, not "missing"
+  # Auth, network or a typo in the repo must not present as "release not published yet".
+  ansible.builtin.assert:
+    that: [_dp_release.rc == 0 or _dp_release_missing | bool]
+    fail_msg: "gh release view {{ decky_plugin_version }} -R {{ decky_plugin_repo }} failed: {{ _dp_release.stderr | trim }}"
+    quiet: true
+  run_once: true
+
+- name: Report a release that is not there
+  ansible.builtin.debug:
+    msg: >-
+      RELEASE {{ decky_plugin_version }} NOT FOUND in {{ decky_plugin_repo }}
+      {{ '(no such tag)' if _dp_release_missing | bool else '(the tag exists but has no asset ' ~ _dp_asset ~ ')' }}.
+      Nothing to preview. Publish it (the repo's release workflow), then pin its sha256 in inventory.
+  when: not (_dp_release_found | bool)
+  run_once: true
+
+- name: HARD GATE — apply needs the release
+  ansible.builtin.assert:
+    that: [_dp_release_found | bool]
+    fail_msg: "Cannot install: release {{ decky_plugin_version }} / asset {{ _dp_asset }} not found in {{ decky_plugin_repo }}."
+    quiet: true
+  when: decky_plugin_apply | bool
+  run_once: true
+
+- name: Download only when found
+  when: _dp_release_found | bool
+  block:
+    - name: Paths
+      ansible.builtin.set_fact:
+        _dp_download_dir: "{{ _dp_staging }}/downloads/{{ decky_plugin_repo | replace('/', '_') }}/{{ decky_plugin_version }}"
+      run_once: true
+
+    - name: Create the download directory
+      ansible.builtin.file:
+        path: "{{ _dp_download_dir }}"
+        state: directory
+        mode: "0700"
+      delegate_to: localhost
+      run_once: true
+      become: false
+
+    - name: Is the pinned archive already here?
+      ansible.builtin.stat:
+        path: "{{ _dp_download_dir }}/{{ _dp_asset }}"
+        checksum_algorithm: sha256
+      register: _dp_cached
+      delegate_to: localhost
+      run_once: true
+      become: false
+
+    - name: Download the archive (and its .sha256 cross-check)
+      # Skipped when the file on disk already has the PINNED digest, so a second run is a no-op.
+      # A cached file with any other digest is re-downloaded, and package.yml then judges what
+      # arrived — a mismatch there is refused, never silently replaced by the cache.
+      ansible.builtin.command:
+        argv: >-
+          {{ ['gh', 'release', 'download', decky_plugin_version, '-R', decky_plugin_repo,
+              '-p', _dp_asset]
+             + (['-p', _dp_asset ~ '.sha256'] if _dp_has_sidecar | bool else [])
+             + ['-D', _dp_download_dir, '--clobber'] }}
+      when: not (_dp_cached.stat.exists and _dp_cached.stat.checksum == decky_plugin_sha256)
+      changed_when: true
+      delegate_to: localhost
+      run_once: true
+      become: false
+
+    - name: Record what package.yml checks
+      ansible.builtin.set_fact:
+        _dp_archive: "{{ _dp_download_dir }}/{{ _dp_asset }}"
+        _dp_sidecar: "{{ (_dp_download_dir ~ '/' ~ _dp_asset ~ '.sha256') if _dp_has_sidecar | bool else '' }}"
+      run_once: true

@@ -1,0 +1,70 @@
+# {{ ansible_managed }}
+{#
+  Re-enables USB wakeup so a magic packet can wake this device from suspend.
+
+  WHY A SERVICE AND NOT A UDEV RULE. The obvious mechanism is a udev rule, but SteamOS REPLACES
+  its rootfs on atomic updates and /etc/udev/rules.d is NOT on the preserve list — the rule would
+  vanish at the next OS update, silently, and the device would just stop being wakeable.
+
+  /etc/systemd/system/*.service IS preserved, by Valve's own default keep-list
+  (/usr/lib/rauc/atomic-update-keep.conf, "Systemd enabled/disabled/masked services, sockets and
+  mount units"), along with *.wants/** which is how `systemctl enable` records itself. So a
+  system service survives updates where a udev rule does not.
+
+  WHY NOT A USER UNIT: writing to /sys needs root, and a user unit has none.
+
+  WHAT IT FIXES. A USB Ethernet adapter can only wake the host if EVERY link between it and the
+  CPU permits a wakeup event — the adapter, the dock's hub, the xHCI controller, the PCI bridges.
+  These default to `disabled` on each boot, and any single one swallows the magic packet with no
+  error anywhere.
+
+  SCOPED TO THE WIRED INTERFACE, and that scope is load-bearing. Walking EVERY interface in
+  /sys/class/net also arms the parents of the wifi adapter and — via the shared PCI bridge — the
+  internal USB controller carrying the Deck's own Steam Controller. A gamepad signals activity
+  constantly, so the device can no longer stay suspended: it resumes 2-4 seconds after every idle
+  suspend, which presents as a handheld that turns itself on (wakeup_active_count shows it: the
+  dock's bus stays at 0, the internal one counts every wake).
+
+  So this walks only the r8152 dock ethernet. If that interface is absent — undocked, which
+  is most of the time — there is nothing to arm and the unit correctly does nothing, rather than
+  arming everything else as a consolation.
+#}
+
+# RUNS BEFORE EVERY SUSPEND, not only at boot. A unit that runs ONCE, at boot
+# (RemainAfterExit=yes, so never again), leaves a dock connected after boot armed by nothing if
+# the companion udev rule is missing — the dock hub and usb2 read `disabled` and magic packets do
+# nothing. The moment the chain must be armed is the moment the device goes to sleep, with the
+# dock as it is THEN; running here (sleep.target, a .wants link Valve's keep-list preserves) needs
+# nothing outside /etc/systemd/system. Hence RemainAfterExit=no: a unit that stays "active" is
+# not started again by the next sleep.
+
+[Unit]
+Description=Enable USB/PCI wakeup for Wake-on-LAN
+# After the USB stack has settled, or the device nodes are not there to write to yet.
+After=systemd-udev-settle.service
+Wants=systemd-udev-settle.service
+# On the sleep path: armed before the system suspends.
+Before=sleep.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=no
+# Walks the DOCK ethernet up through its parents, enabling any power/wakeup it finds. Written as
+# a walk rather than a fixed list of paths because USB topology ids (2-1, 2-1.1) change with
+# which port the dock is in — hardcoding them would work until the dock moved.
+# Selected by DRIVER (r8152, the dock's Realtek chip), never by interface name: the name is
+# generated from USB topology (enp4s0f3u1u1) and changes with the port the dock is in.
+ExecStart=/usr/bin/bash -c '\
+  for iface in $(ls /sys/class/net | grep -v "^lo$"); do \
+    drv=$(basename "$(readlink -f "/sys/class/net/$iface/device/driver" 2>/dev/null)" 2>/dev/null); \
+    [ "$drv" = "r8152" ] || continue; \
+    d=$(readlink -f "/sys/class/net/$iface/device" 2>/dev/null) || continue; \
+    while [ -n "$d" ] && [ "$d" != "/" ]; do \
+      [ -f "$d/power/wakeup" ] && echo enabled > "$d/power/wakeup" 2>/dev/null; \
+      d=$(dirname "$d"); \
+    done; \
+  done; \
+  exit 0'
+
+[Install]
+WantedBy=multi-user.target sleep.target

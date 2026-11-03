@@ -1,0 +1,104 @@
+---
+# ENTRYPOINT: install the script behind the "DST: play on <host>" tile — one press starts the
+# server, launches Don't Starve Together straight into it (steam -applaunch +connect +password),
+# and stops the server when you quit (only if nobody else is on it). See templates/dst-play.sh.j2.
+#
+# WRITES TO $HOME ONLY (two files), unprivileged — the same shape as dst_control, which it builds
+# on: the play tile calls ~/.local/bin/iaac-dst.sh to start and stop the server. The tile itself
+# comes from steamdeck_managed_shortcuts via steamdeck_action=shortcuts (which stops Steam ON THE
+# DECK to write shortcuts.vdf) — so installing this never disturbs a running game.
+#
+# THE JOIN PASSWORD LANDS ON THE DEVICE, in ~/.config/iaac/dst-play.env at 0600: the tile has no
+# controller to fetch it from. It is the low-value join password of a game server, generated
+# alphanumeric (the script refuses anything else, since it becomes a launch argument).
+#
+# AND IN THE GAME'S OWN LOGS — an accepted trade-off for a low-value join password. The tile joins with `steam -applaunch 322330 +connect
+# <ip>:<port> +password <pw>`, so (a) DST writes its command line into client_log.txt and its
+# backup/client_log/ copies, and (b) the value is in the argv of steam and every game process,
+# readable by any local process on the Deck while DST runs. Mitigation if it ever matters: rotate
+# it (rotate the item, redeploy the server with it, then reinstall this) — see dst-play.sh.j2.
+# The alternative (a one-shot join mod holding the password in a 0600 file deleted after the
+# connect) is far more machinery for the same join.
+
+- name: Apply role defaults
+  ansible.builtin.include_tasks: setup_vars.yml
+
+- name: HARD GATE — the server, its control endpoint and the password item are declared
+  ansible.builtin.assert:
+    that:
+      - steamdeck_dst_control_url | default('') is match('^https?://')
+      - steamdeck_dst_play_host | length > 0
+      - steamdeck_dst_play_password_item | length > 0
+      - steamdeck_dst_play_secret_vault | length > 0
+    fail_msg: >-
+      Declare steamdeck_dst_control_url, steamdeck_dst_play_host (the DST server's name),
+      steamdeck_dst_play_password_item (its join password in 1Password) and
+      steamdeck_dst_play_secret_vault (that item's vault) in inventory.
+    quiet: true
+
+- name: Derive the paths
+  ansible.builtin.set_fact:
+    _sd_dst_play_script: "{{ ansible_env.HOME }}/.local/bin/iaac-dst-play.sh"
+    _sd_dst_play_conf: "{{ ansible_env.HOME }}/.config/iaac/dst-play.env"
+    _sd_dst_ctl_script: "{{ ansible_env.HOME }}/.local/bin/iaac-dst.sh"
+
+- name: Read the join password
+  ansible.builtin.set_fact:
+    _sd_dst_play_password: >-
+      {{ lookup('richard_lynch.common.onepassword_cached', steamdeck_dst_play_password_item,
+                field=steamdeck_dst_play_password_field, vault=steamdeck_dst_play_secret_vault) | trim }}
+  no_log: true
+
+- name: HARD GATE — the password is the alphanumeric shape the script accepts
+  ansible.builtin.assert:
+    that: ["_sd_dst_play_password is match('^[A-Za-z0-9]+$')"]
+    fail_msg: >-
+      {{ steamdeck_dst_play_password_item }} is empty or not alphanumeric — the tile passes it as a
+      launch argument (+password) and refuses anything else.
+    quiet: true
+  no_log: true
+
+- name: Is the start/stop script (dst_control) installed?
+  ansible.builtin.stat:
+    path: "{{ _sd_dst_ctl_script }}"
+  register: _sd_dst_ctl
+
+- name: HARD GATE — the play tile builds on dst_control
+  ansible.builtin.assert:
+    that: [_sd_dst_ctl.stat.exists]
+    fail_msg: >-
+      {{ _sd_dst_ctl_script }} is missing; install it first with steamdeck_action=dst_control.
+    quiet: true
+
+- name: Ensure the directories exist
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: "{{ _sd_dst_play_script | dirname }}", mode: "0755" }
+    - { path: "{{ _sd_dst_play_conf | dirname }}", mode: "0700" }
+
+- name: Install the play script
+  ansible.builtin.template:
+    src: dst-play.sh.j2
+    dest: "{{ _sd_dst_play_script }}"
+    mode: "0755"
+  register: _sd_dst_play_installed
+
+- name: Write its config (holds the join password — 0600)
+  ansible.builtin.template:
+    src: dst-play.env.j2
+    dest: "{{ _sd_dst_play_conf }}"
+    mode: "0600"
+  no_log: true
+  register: _sd_dst_play_conf_written
+
+- name: Report
+  ansible.builtin.debug:
+    msg:
+      - >-
+        {{ 'Installed' if (_sd_dst_play_installed is changed or _sd_dst_play_conf_written is changed)
+           else 'Already current' }}: {{ _sd_dst_play_script }} (+ {{ _sd_dst_play_conf }}, 0600).
+      - "The tile is declared in steamdeck_managed_shortcuts; write it with steamdeck_action=shortcuts."
+      - "Run log on the device: $HOME/.local/share/iaac-dst-play.log"

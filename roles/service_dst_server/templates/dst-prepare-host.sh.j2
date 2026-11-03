@@ -1,0 +1,59 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# Host side of {{ _dst_prepare_unit }}: back up, then install/update the server and mods in a
+# throwaway container. Every shard unit Requires this, so it runs before every start.
+#
+# SKIPPED WHEN A SHARD IS ALREADY RUNNING. A shard restarting on its own (Restart=on-failure)
+# re-runs this unit. Updating then would replace the server's files UNDER the shard that is still
+# running, and backing up would archive a world that is mid-write — so if any shard of this
+# cluster is active, only the mod setup file is refreshed. `is-active` is false for a shard that
+# is merely waiting on this unit (it is still `activating`), so a normal start is never skipped.
+set -uo pipefail
+
+PODMAN={{ dst_podman | quote }}
+UPDATE={{ 'true' if dst_update_on_start | bool else 'false' }}
+MODS={{ 'true' if dst_mods_update_on_start | bool else 'false' }}
+BACKUP={{ 'true' if dst_backup_on_start | bool else 'false' }}
+
+running=""
+for unit in {% for s in _dst_shards %}{{ s.unit | quote }} {% endfor %}; do
+    if systemctl --user is-active --quiet "$unit"; then
+        running="$running $unit"
+    fi
+done
+
+# dst_action=update runs this script directly with DST_FORCE_UPDATE=1 (and its own backup first,
+# so DST_SKIP_BACKUP=1): the same code path as a start, with the update made unconditional.
+if [ "${DST_FORCE_UPDATE:-0}" = 1 ]; then
+    UPDATE=true
+    MODS=true
+fi
+if [ "${DST_SKIP_BACKUP:-0}" = 1 ]; then
+    BACKUP=false
+fi
+
+if [ -n "$running" ]; then
+    echo "dst-prepare: already running:$running — skipping update, mod download and backup"
+    UPDATE=false
+    MODS=false
+    BACKUP=false
+fi
+
+if [ "$BACKUP" = true ]; then
+    # A failed backup must not stop the server starting: it is insurance, and the previous
+    # archives are still there. It is reported in the journal either way.
+    {{ (_dst_dirs.bin ~ '/dst-backup.sh') | quote }} pre-start || echo "dst-prepare: WARNING — pre-start backup FAILED"
+fi
+
+exec "$PODMAN" run --rm --replace --name {{ _dst_prepare_container | quote }} \
+    --network host \
+{% for v in _dst_volumes %}
+    --volume {{ v | quote }} \
+{% endfor %}
+    --env DST_CLUSTER={{ dst_cluster_dir_name | quote }} \
+    --env DST_UPDATE="$UPDATE" \
+    --env DST_VALIDATE={{ 'true' if dst_update_validate | bool else 'false' }} \
+    --env DST_BETA={{ dst_beta_branch | quote }} \
+    --env DST_RETRIES={{ dst_steamcmd_retries | int }} \
+    --env DST_MODS_UPDATE="$MODS" \
+    {{ _dst_image | quote }} dst-prepare

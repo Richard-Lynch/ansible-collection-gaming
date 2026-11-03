@@ -1,0 +1,62 @@
+---
+# ENTRYPOINT: install ONE Decky Loader plugin from a pinned GitHub release, write its config,
+# and prove the RUNNING backend came up.
+#
+#   1. fetch.yml    — CONTROLLER: `gh release download` the pinned tag's zip (skipped when
+#                     decky_plugin_archive names a local one — tests). Release missing = a clean
+#                     report in preview, a failure in apply.
+#   2. package.yml  — CONTROLLER: refuse unless sha256 == the PINNED value, unpack, check the
+#                     archive's shape and plugin.json name; render the config and judge it with
+#                     the plugin's own validator BEFORE anything reaches the device.
+#   3. install.yml  — DEVICE: plan, then (apply only) converge ~/homebrew/plugins/<directory>/ to
+#                     exactly the archive, write config.json, restart Decky if files changed.
+#   4. _probe.yml   — DEVICE: loaded / failed / cannot tell, from the process and its own log.
+#
+# WHY A FILE CHANGE RESTARTS DECKY (Decky Loader v3.2.9 loader.py): its watchdog
+# reacts only to main.py / dist/index.js events, and for a plugin that is ALREADY LOADED it
+# refuses the reload unless plugin.json carries the `debug` flag ("already loaded and has
+# requested to not be re-loaded"). A first install would be hot-loaded, but by whichever of those
+# two files lands first — before py_modules may exist. So Decky is stopped for the write and
+# started after, the same pattern the steamdeck role uses for decky_plugins/decky_settings.
+# A CONFIG-only change does not restart anything: Decky does not watch settings/, and a plugin
+# that re-reads its config per call picks it up on the next call.
+#
+# Generate-don't-apply: without decky_plugin_apply nothing on the device is written. The
+# controller-side download and unpack DO run in preview — they are what makes the plan honest.
+
+- name: Resolve declared options over their generated defaults
+  ansible.builtin.include_tasks: _resolve_defaults.yml
+
+- name: Check declared constraints
+  ansible.builtin.include_tasks: _argspec_guards.yml
+
+- name: Derive the controller staging directory
+  # The CONTROLLER user's home (lookup('env') runs on the controller), not the device's.
+  ansible.builtin.set_fact:
+    _dp_staging: >-
+      {{ decky_plugin_staging_dir if decky_plugin_staging_dir | length > 0
+         else lookup('ansible.builtin.env', 'HOME') ~ '/.cache/iaac/decky_plugin' }}
+    _dp_asset: >-
+      {{ decky_plugin_asset if decky_plugin_asset | length > 0
+         else decky_plugin_directory ~ '-' ~ decky_plugin_version ~ '.zip' }}
+
+- name: Fetch the release archive on the controller
+  ansible.builtin.include_tasks: fetch.yml
+  when: decky_plugin_archive | length == 0
+
+- name: Use the archive the caller supplied
+  ansible.builtin.set_fact:
+    _dp_archive: "{{ decky_plugin_archive }}"
+    _dp_sidecar: ""
+    _dp_release_found: true
+  when: decky_plugin_archive | length > 0
+
+- name: Stop here when the pinned release does not exist (preview only reaches this)
+  ansible.builtin.meta: end_host
+  when: not (_dp_release_found | bool)
+
+- name: Verify and unpack it on the controller
+  ansible.builtin.include_tasks: package.yml
+
+- name: Plan and converge the device
+  ansible.builtin.include_tasks: install.yml

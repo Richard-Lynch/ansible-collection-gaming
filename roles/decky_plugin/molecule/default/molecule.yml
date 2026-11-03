@@ -1,0 +1,35 @@
+---
+# Offline scenario — converges the role's REAL tasks on localhost against a fixture home with
+# a fixture release zip: no GitHub, no Decky, no systemd, no sudo.
+#
+# WHAT THIS TESTS: the pin is enforced (a wrong sha256 is REFUSED before anything is written);
+# the archive is unpacked and its shape checked; the plugin's own validator judges the config
+# BEFORE the device (a config it rejects is refused); the plugin directory converges to EXACTLY
+# the archive (a stale file is removed, __pycache__ is kept); config.json renders from the dict
+# at 0600; and molecule's idempotence pass proves a second run changes nothing. The verify
+# entrypoint runs too, and must NOT report "loaded" for a plugin with no running backend.
+#
+# WHAT IT DOES NOT TEST: `gh release download` (needs a GitHub credential), the Decky
+# restart and the live loaded verdict (need a Deck). The helpers' own logic is pinned by
+# files/test_decky_plugin.py, run in converge.
+dependency: { name: galaxy }
+driver: { name: default }
+platforms: [{ name: localhost }]
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: "${MOLECULE_PROJECT_DIRECTORY}/../"
+    ANSIBLE_COLLECTIONS_PATH: "${MOLECULE_PROJECT_DIRECTORY}/../../collections.galaxy:${MOLECULE_PROJECT_DIRECTORY}/../../../../.."
+  inventory: { host_vars: { localhost: { ansible_connection: local } } }
+  playbooks:
+    { prepare: prepare.yml, converge: converge.yml, verify: verify.yml, cleanup: cleanup.yml }
+verifier: { name: ansible }
+scenario:
+  # The stale file is planted in PREPARE: planting it in converge would re-create it before the
+  # idempotence pass and make the role's (correct) removal look like a non-idempotent change.
+  #
+  # destroy/create are no-ops for this driver, but destroy RESETS molecule's "already prepared"
+  # flag; without it the run after a PASSING one skips prepare and tests the previous run's
+  # leftovers (a gate that then fails on alternate runs). cleanup removes the scratch roots at
+  # both ends.
+  test_sequence: [destroy, syntax, create, cleanup, prepare, converge, idempotence, verify, cleanup, destroy]

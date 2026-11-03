@@ -1,0 +1,212 @@
+---
+# ENTRYPOINT: install, configure and REMOVE CSS Loader themes. Reports by default; writes with
+# steamdeck_apply=true.
+#
+# ---------------------------------------------------------------------------------------------
+# REMOVAL IS EXPLICIT (steamdeck_css_remove), because undeclaring a theme does NOT uninstall it.
+# Nothing here reconciles the themes directory against inventory — only declared themes are ever
+# touched — so deleting a theme's inventory lines leaves it installed and STILL ACTIVE, styling
+# the UI with nothing in the repo explaining why.
+#
+# The supported sequence is therefore: `enabled: false` -> apply -> confirm {"active": false} on
+# the device -> name the folder in steamdeck_css_remove -> apply -> THEN drop the lines.
+#
+# WHY THIS IS AUTOMATABLE AT ALL. CSS Loader's themes are ordinary directories under
+# ~/homebrew/themes/, and each theme's enable-state and option selections live in a
+# `config_USER.json` inside its own directory:
+#
+#     {"active": true, "Main Color": "Black", "Disable Blur": "Yes"}
+#
+# So the whole of "which themes, turned on, with which options" is declarative — it is only the
+# INSTALL that needs the network, and that is a zip from DeckThemes' public API.
+#
+# ---------------------------------------------------------------------------------------------
+# DECKY IS STOPPED FOR THE WRITE, for the same reason as decky_settings and shortcuts.
+#
+# css_theme.py's save() rewrites config_USER.json wholesale from the loader's IN-MEMORY state:
+#
+#     config = {"active": self.enabled}
+#     for x in self.patches:
+#         config[x.name] = x.get_value()
+#
+# A write performed while CSS Loader is running is therefore discarded the next time anything
+# causes a save — the theme reverts and nothing reports an error.
+#
+# ---------------------------------------------------------------------------------------------
+# PATCH VALUES ARE VALIDATED AGAINST EACH THEME'S OWN theme.json, because CSS Loader will not.
+# ThemePatch.check_value() silently resets an unrecognised value to the patch default, with no
+# error and no log line — so a plausible-looking "Disable Blur: true" (the real option is "Yes")
+# reads as configured and does nothing at all. The helper fails the run instead.
+
+- name: Apply role defaults
+  ansible.builtin.include_tasks: setup_vars.yml
+
+- name: Assert themes were declared
+  ansible.builtin.assert:
+    that:
+      - (steamdeck_css_themes | length) > 0 or (steamdeck_css_remove | length) > 0
+    fail_msg: >-
+      Declare steamdeck_css_themes in inventory as a list of {name, id, patches}. The id is the
+      DeckThemes uuid — the themeId in https://deckthemes.com/themes/view?themeId=...
+      To uninstall instead, name the theme's folder in steamdeck_css_remove.
+    quiet: true
+
+- name: Check CSS Loader is installed
+  # A theme is inert without the plugin that loads it. Checked explicitly rather than inferred
+  # from the themes directory, which this role would otherwise happily create itself — leaving
+  # correctly-installed themes that nothing ever renders.
+  ansible.builtin.stat:
+    path: "{{ ansible_env.HOME }}/homebrew/plugins/SDH-CssLoader"
+  register: _sd_css_plugin
+
+- name: Assert CSS Loader is present
+  ansible.builtin.assert:
+    that:
+      - _sd_css_plugin.stat.exists
+    fail_msg: >-
+      CSS Loader is not installed (~/homebrew/plugins/SDH-CssLoader is missing). Install it from
+      the Decky store first — this entrypoint manages its themes, it does not bootstrap the
+      plugin.
+    quiet: true
+
+- name: Install the theme helper
+  ansible.builtin.copy:
+    src: css_themes.py
+    dest: "{{ steamdeck_helper_dir }}/css_themes.py"
+    mode: "0755"
+
+- name: Report what would change
+  # Report mode downloads each theme zip to MEMORY to read its theme.json — the API record does
+  # not carry a theme's patch list, so this is the only way to validate declared options before
+  # anything is written. Nothing reaches disk on this path.
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/python3
+      - "{{ steamdeck_helper_dir }}/css_themes.py"
+      - --themes-root
+      - "{{ ansible_env.HOME }}/homebrew/themes"
+      - --desired
+      - "{{ steamdeck_css_themes | to_json }}"
+      - --remove
+      - "{{ steamdeck_css_remove | to_json }}"
+  register: _sd_css_plan
+  changed_when: false
+  # Non-zero means a declared patch name or value does not exist in the theme. That is a real
+  # configuration error and the next task asserts on it — but it must not abort the play before
+  # the report is shown, or the operator sees a failed command and no explanation.
+  failed_when: false
+
+- name: Show the plan
+  ansible.builtin.debug:
+    msg: "{{ _report.splitlines() }}"
+  vars:
+    _p: "{{ _sd_css_plan.stdout[_sd_css_plan.stdout.find('{') :] | from_json }}"
+    _report: |
+      ===== CSS THEMES =====
+      {% for t in _p.themes %}
+      {{ '%-18s' | format(t.name) }} {{ t.upstream_version | default('?') }}
+      {{- ' installed=' ~ (t.installed_version | default('none', true)) }}
+      {{- '  ' ~ (t.actions | join(', ') if t.actions else 'up to date') }}
+      {% if t.diff | default({}) %}
+      {% for k, v in t.diff.items() %}
+          {{ k }}: {{ v.from | default('unset', true) }} -> {{ v.to }}
+      {% endfor %}
+      {% endif %}
+      {% endfor %}
+
+      {% if _p.removed %}
+      ----- REMOVALS -----
+      {% for r in _p.removed %}
+      {{ '%-18s' | format(r.name) }} {{ r.state | default('?') }}
+      {{- '  ' ~ ('WILL BE DELETED' if r.actions else 'already absent') }}
+      {% endfor %}
+      {% endif %}
+
+      {% if _p.problems %}
+      PROBLEMS:
+      {% for _prob in _p.problems %}
+        {{ _prob }}
+      {% endfor %}
+      {% endif %}
+      {{ '' if (steamdeck_apply | bool) else '(report only — re-run with steamdeck_apply=true)' }}
+
+- name: Assert every declared patch is real
+  # A hard stop, because the alternative is CSS Loader silently substituting its own default and
+  # the theme looking configured while ignoring what was asked for.
+  ansible.builtin.assert:
+    that:
+      - (_sd_css_plan.stdout[_sd_css_plan.stdout.find('{') :] | from_json).problems | length == 0
+    fail_msg: >-
+      {{ (_sd_css_plan.stdout[_sd_css_plan.stdout.find('{') :] | from_json).problems | join('; ') }}
+    quiet: true
+
+- name: Apply the themes
+  when: steamdeck_apply | bool
+  block:
+    - name: Stop Decky before writing theme configuration
+      ansible.builtin.systemd_service:
+        name: plugin_loader
+        state: stopped
+      become: true
+
+    - name: Install and configure
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/python3
+          - "{{ steamdeck_helper_dir }}/css_themes.py"
+          - --themes-root
+          - "{{ ansible_env.HOME }}/homebrew/themes"
+          - --desired
+          - "{{ steamdeck_css_themes | to_json }}"
+          - --remove
+          - "{{ steamdeck_css_remove | to_json }}"
+          - --apply
+      register: _sd_css_apply
+      changed_when: (_sd_css_apply.stdout[_sd_css_apply.stdout.find('{') :] | from_json).changed | bool
+
+  always:
+    # ALWAYS, not a following task. Decky is the Steam UI's plugin host — leaving it stopped
+    # because a download failed mid-run would take CSS Loader, every other plugin and their
+    # Quick Access menu entries down with it, and nothing would restart them.
+    - name: Start Decky again
+      ansible.builtin.systemd_service:
+        name: plugin_loader
+        state: started
+      become: true
+
+- name: Re-read the themes after Decky has restarted
+  # The read-back that proves it stuck. Run AFTER the restart specifically because the failure
+  # being guarded against is CSS Loader rewriting config_USER.json from its own in-memory state
+  # when it starts — which a check before the restart cannot see.
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/python3
+      - "{{ steamdeck_helper_dir }}/css_themes.py"
+      - --themes-root
+      - "{{ ansible_env.HOME }}/homebrew/themes"
+      - --desired
+      - "{{ steamdeck_css_themes | to_json }}"
+      - --remove
+      - "{{ steamdeck_css_remove | to_json }}"
+  register: _sd_css_after
+  changed_when: false
+  failed_when: false
+  when: steamdeck_apply | bool
+
+- name: Assert the themes kept their configuration
+  ansible.builtin.assert:
+    that:
+      - not (_sd_css_after.stdout[_sd_css_after.stdout.find('{') :] | from_json).changed | bool
+    fail_msg: >-
+      A theme did not keep its configuration across the Decky restart — CSS Loader rewrote it:
+      {{ (_sd_css_after.stdout[_sd_css_after.stdout.find('{') :] | from_json).themes
+         | selectattr('actions') | map(attribute='name') | join(', ') }}
+    quiet: true
+  when: steamdeck_apply | bool
+
+- name: Report the result
+  ansible.builtin.debug:
+    msg:
+      - "{{ steamdeck_css_themes | map(attribute='name') | join(', ') }} installed and verified."
+      - "Themes apply to the Steam UI immediately; a Steam restart is not needed."
+  when: steamdeck_apply | bool

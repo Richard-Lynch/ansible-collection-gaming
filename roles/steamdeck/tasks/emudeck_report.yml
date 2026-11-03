@@ -1,0 +1,121 @@
+---
+# ENTRYPOINT: what is EmuDeck configured to do, and what would a rerun change? Writes nothing.
+#
+# WHY THIS IS THE FIRST THING TO BUILD. EmuDeck's GUI is a thin wrapper: it writes
+# ~/.config/EmuDeck/settings.json and then runs `bash setup.sh`, which has no interactive
+# prompts at all. So the whole wizard is already declarative — but only if you know what the
+# current settings actually are, and whether rerunning would preserve or destroy hand-tuned
+# emulator configs.
+#
+# THE DANGEROUS FLAG IS `overwriteConfigEmus`. For each emulator it decides whether setup.sh
+# REPLACES that emulator's config (keeping a .bak) or leaves it alone. With it enabled — which
+# is the default, for every emulator — a rerun silently reverts any hand-tuning. That is the single fact anyone needs before touching EmuDeck from Ansible.
+#
+# settings.json IS THE SOURCE OF TRUTH, not settings.sh: a full setup.sh run regenerates the
+# shell file from the JSON, so writing settings.sh alone is lost at the next rerun.
+
+- name: Apply role defaults
+  ansible.builtin.include_tasks: setup_vars.yml
+
+- name: Read the EmuDeck installation
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -o pipefail
+      C="$HOME/.config/EmuDeck"
+      printf 'settings_json=%s\n' "$([ -f "$C/settings.json" ] && echo present || echo absent)"
+      printf 'settings_sh=%s\n' "$([ -f "$C/settings.sh" ] && echo present || echo absent)"
+      printf 'backend=%s\n' "$([ -d "$C/backend" ] && echo present || echo absent)"
+      if [ -d "$C/backend/.git" ]; then
+        printf 'backend_ref=%s\n' "$(git -C "$C/backend" rev-parse --short HEAD 2>/dev/null)"
+        printf 'backend_branch=%s\n' "$(git -C "$C/backend" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+        # A dirty backend matters: the update path is `git reset --hard && git pull`, so local
+        # edits there are destroyed rather than merged.
+        printf 'backend_dirty=%s\n' "$(git -C "$C/backend" status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
+        # CONTENT changes only. `git status --porcelain` also reports MODE changes, and EmuDeck
+        # legitimately chmod +x's its own launcher scripts — reporting those as "local edits at
+        # risk" cries wolf about the tool's normal behaviour, so the diff
+        # excludes whitespace/mode noise.
+        printf 'backend_content_dirty=%s\n' \
+          "$(git -C "$C/backend" diff --numstat 2>/dev/null | awk '$1 != 0 || $2 != 0' | wc -l | tr -d ' ')"
+      fi
+      # Scripts here run at the END of every setup.sh, including a GUI-triggered one — the
+      # sanctioned hook for making a device converge back to declared state.
+      printf 'custom_scripts=%s\n' "$(ls "$C/custom_scripts" 2>/dev/null | wc -l | tr -d ' ')"
+      printf 'finished_marker=%s\n' "$([ -f "$C/.finished" ] && echo present || echo absent)"
+  register: _sd_ed
+  changed_when: false
+  check_mode: false # a read: under --check the report must still have something to parse
+
+- name: Parse the installation state
+  ansible.builtin.set_fact:
+    _sd_edi: >-
+      {{ dict(_sd_ed.stdout_lines | select('search', '=') | map('split', '=', 1) | list) }}
+
+- name: Assert EmuDeck is installed
+  ansible.builtin.assert:
+    that:
+      - _sd_edi.settings_json | default('absent') == 'present'
+    fail_msg: >-
+      No ~/.config/EmuDeck/settings.json — EmuDeck has not been run on this device. Its first
+      run clones the backend and writes that file; this role manages an existing install rather
+      than bootstrapping one.
+    quiet: true
+
+- name: Read the declared configuration
+  ansible.builtin.slurp:
+    src: "{{ ansible_env.HOME }}/.config/EmuDeck/settings.json"
+  register: _sd_ed_raw
+
+- name: Report
+  ansible.builtin.debug:
+    msg: "{{ _report.splitlines() }}"
+  vars:
+    _s: "{{ _sd_ed_raw.content | b64decode | from_json }}"
+    _install: "{{ _s.installEmus | default({}) }}"
+    _overwrite: "{{ _s.overwriteConfigEmus | default({}) }}"
+    _on: "{{ _install | dict2items | selectattr('value.status') | map(attribute='key') | sort | list }}"
+    _ow: "{{ _overwrite | dict2items | selectattr('value.status') | map(attribute='key') | sort | list }}"
+    _report: |
+      ===== EMUDECK =====
+      settings.json : {{ _sd_edi.settings_json | default('?') }}
+      backend       : {{ _sd_edi.backend | default('?') }}{{ ' @ ' ~ _sd_edi.backend_ref ~ ' (' ~ _sd_edi.backend_branch ~ ')' if _sd_edi.backend_ref is defined else '' }}
+      backend dirty : {{ _sd_edi.backend_dirty | default('?') }} file(s), of which
+                      {{ _sd_edi.backend_content_dirty | default('?') }} differ in CONTENT
+      custom_scripts: {{ _sd_edi.custom_scripts | default('0') }}
+      storage path  : {{ _s.storagePath | default('?') }}
+
+      ===== EMULATORS INSTALLED ({{ _on | length }}) =====
+      {{ _on | join(', ') | wordwrap(84) }}
+
+      ===== CONFIG OVERWRITE ON RERUN ({{ _ow | length }}) =====
+      {{ _ow | join(', ') | wordwrap(84) }}
+
+      {{ 'WARNING: setup.sh would REPLACE the config of every emulator listed above, keeping a
+      .bak. Any hand-tuning in those configs is reverted. Set overwriteConfigEmus.<emu>.status
+      to false for emulators whose configuration should be preserved.'
+         if (_ow | length) > 0
+         else 'No emulator configs would be overwritten by a rerun.' }}
+
+      {{ 'The backend has LOCAL CONTENT EDITS. EmuDeck updates it with `git reset --hard &&
+      git pull`, so those are destroyed rather than merged — put changes in custom_scripts/.'
+         if (_sd_edi.backend_content_dirty | default('0') | int) > 0
+         else ('The backend reports ' ~ _sd_edi.backend_dirty | default('0') ~ ' modified
+      file(s), but NO content changes — these are mode bits EmuDeck sets itself (chmod +x on its
+      launchers). Nothing of yours is at risk.'
+      if (_sd_edi.backend_dirty | default('0') | int) > 0 else '') }}
+
+- name: Explain how this becomes declarative
+  ansible.builtin.debug:
+    msg:
+      - "settings.json is the SOURCE OF TRUTH — setup.sh regenerates settings.sh from it, so"
+      - "editing the shell file alone is lost at the next rerun."
+      - ""
+      - "A rebuild is: restore settings.json, clone the backend at a pinned ref, run"
+      - "`bash ~/.config/EmuDeck/backend/setup.sh <branch> false` — which has NO prompts."
+      - ""
+      - "Individual emulators can be configured without the full run:"
+      - "  bash -c 'source ~/.config/EmuDeck/backend/functions/all.sh && Dolphin_init'"
+      - ""
+      - "custom_scripts/*.sh runs at the END of every setup.sh, including GUI-triggered ones —"
+      - "so a script there makes the device converge back to declared state even after manual use."

@@ -1,0 +1,108 @@
+---
+# ENTRYPOINT: reboot the Deck, and verify it actually came back as itself.
+#
+# WHY A REBOOT ENTRYPOINT AT ALL. Until now the only way this role rebooted was `wol_verify`,
+# which reboots as a side effect of testing Wake-on-LAN persistence — so "just restart the Deck"
+# had no play, and the alternative was a hand-run `ssh deck reboot`. That is precisely the shape
+# THE RULE exists to prevent: a routine action living in shell history.
+#
+# WHAT IT VERIFIES. Not merely "did it answer SSH again" — a device that reboots into a different
+# state is still a device that answered. It compares the BOOT ID either side, so a reboot that
+# silently did not happen (the command swallowed, the device resumed from sleep instead) is caught
+# rather than reported as success, and re-checks that nothing came back failed.
+#
+# DESTRUCTIVE: it interrupts whatever the user is doing. Gated on steamdeck_reboot_confirm, which
+# is separate from steamdeck_apply so a reboot cannot happen as a side effect of a broader run.
+
+- name: Apply role defaults
+  ansible.builtin.include_tasks: setup_vars.yml
+
+- name: Require explicit confirmation
+  ansible.builtin.assert:
+    that:
+      - steamdeck_reboot_confirm | bool
+    fail_msg: >-
+      This REBOOTS the Steam Deck. Set steamdeck_reboot_confirm=true to proceed.
+    quiet: true
+
+- name: Record the state before rebooting
+  # The boot id is what makes this honest: it changes on a real reboot and does not change if the
+  # device merely suspended and resumed, so comparing it catches a reboot that never happened.
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -o pipefail
+      printf 'boot_id=%s\n' "$(cat /proc/sys/kernel/random/boot_id)"
+      printf 'uptime=%s\n' "$(cut -d. -f1 /proc/uptime)"
+      printf 'failed=%s\n' "$(systemctl --failed --no-legend 2>/dev/null | wc -l | tr -d ' ')"
+  register: _sd_rb_pre
+  changed_when: false
+
+- name: Parse the pre-reboot state
+  # PARSED ONCE into a dict, rather than regex_search repeated inside report strings: inside a
+  # FOLDED (>-) scalar a backslash escape is not an escape, so '\d' would reach the regex engine
+  # as a literal 'd', match nothing, and return None — while the identical expression works in a
+  # double-quoted scalar, purely by quoting style. Splitting on '=' needs no escapes at all and
+  # cannot regress that way.
+  ansible.builtin.set_fact:
+    _sd_pre: >-
+      {{ dict(_sd_rb_pre.stdout.splitlines() | select('search', '=')
+              | map('split', '=', 1) | list) }}
+
+- name: Report the plan
+  ansible.builtin.debug:
+    msg: >-
+      Rebooting the Deck. Currently up
+      {{ ((_sd_pre.uptime | int) / 3600) | round(1) }} hours,
+      {{ _sd_pre.failed }} failed unit(s).
+
+- name: Reboot
+  ansible.builtin.reboot:
+    reboot_timeout: "{{ steamdeck_reboot_timeout | int }}"
+    msg: "Reboot by Ansible (steamdeck role)"
+  become: true
+
+- name: Read the state after rebooting
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -o pipefail
+      printf 'boot_id=%s\n' "$(cat /proc/sys/kernel/random/boot_id)"
+      printf 'uptime=%s\n' "$(cut -d. -f1 /proc/uptime)"
+      printf 'failed=%s\n' "$(systemctl --failed --no-legend 2>/dev/null | wc -l | tr -d ' ')"
+      printf 'failed_units=%s\n' "$(systemctl --failed --no-legend 2>/dev/null | awk '{print $1}' | tr '\n' ' ')"
+  register: _sd_rb_post
+  changed_when: false
+
+- name: Parse the post-reboot state
+  ansible.builtin.set_fact:
+    _sd_post: >-
+      {{ dict(_sd_rb_post.stdout.splitlines() | select('search', '=')
+              | map('split', '=', 1) | list) }}
+
+- name: Assert the device genuinely rebooted
+  # A DIFFERENT boot id is the proof. Without this, a reboot that was swallowed — or a resume from
+  # sleep — reads as success because SSH answered either way.
+  ansible.builtin.assert:
+    that:
+      - _pre_id != _post_id
+      - _post_up < _pre_up
+    fail_msg: >-
+      The Deck did not actually reboot. boot_id before={{ _pre_id }} after={{ _post_id }},
+      uptime before={{ _pre_up }}s after={{ _post_up }}s. An unchanged boot id means the reboot
+      never happened (swallowed command, or a resume rather than a restart).
+    success_msg: "Rebooted: new boot id {{ _post_id }}, up {{ _post_up }}s."
+  vars:
+    _pre_id: "{{ _sd_pre.boot_id }}"
+    _post_id: "{{ _sd_post.boot_id }}"
+    _pre_up: "{{ _sd_pre.uptime | int }}"
+    _post_up: "{{ _sd_post.uptime | int }}"
+
+- name: Report anything that came back failed
+  # REPORTED, not asserted: a unit that was already failing before the reboot is a pre-existing
+  # condition, not something this play caused. Asserting would blame the reboot for it.
+  ansible.builtin.debug:
+    msg: >-
+      failed units before={{ _sd_pre.failed }} after={{ _sd_post.failed }}
+      {{ ('— ' ~ (_sd_post.failed_units | default('') | trim))
+         if (_sd_post.failed | int) > 0 else '— nothing failed.' }}

@@ -1,0 +1,31 @@
+---
+# Read systemd properties for every shard unit, one unit per command, into _dst_unit_props:
+#   {<unit>: {ActiveState: ..., Result: ..., ExecMainStatus: ...}}
+#
+# ONE UNIT PER CALL, parsed from stdout_lines: `systemctl show` of several units separates them
+# with blank lines in its own property order, and splitting that text needs a "\n\n" escape —
+# the YAML/Jinja backslash trap (YAMLESC-01). Per-unit lines need no escape at all.
+
+- name: Read the shard units' properties
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - --user
+      - show
+      - "{{ shard.unit }}"
+      - --property=ActiveState
+      - --property=Result
+      - --property=ExecMainStatus
+  loop: "{{ _dst_shards }}"
+  loop_control:
+    loop_var: shard
+    label: "{{ shard.unit }}"
+  register: _dst_unit_props_raw
+  changed_when: false
+
+- name: Index the properties by unit
+  ansible.builtin.set_fact:
+    _dst_unit_props: >-
+      {{ dict(_dst_unit_props_raw.results | map(attribute='shard.unit')
+              | zip(_dst_unit_props_raw.results | map(attribute='stdout_lines')
+                    | map('map', 'split', '=') | map('community.general.dict'))) }}

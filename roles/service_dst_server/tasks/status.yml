@@ -1,0 +1,146 @@
+---
+# ENTRYPOINT: what is the cluster doing, and is it running what is declared? READ-ONLY.
+#
+#   dst_action=status
+#
+# THREE separate questions, because each has bitten this repo as a single "it's fine":
+#   1. is it up and JOINABLE (every shard listening), and who is on it — the live process
+#   2. is the RUNNING process older than its config files — the config-on-disk trap: the game
+#      reads cluster.ini/modoverrides.lua at start only, so a deploy is invisible until a restart
+#   3. are the declared mods actually DOWNLOADED — declared is not installed
+
+- name: Deployed?
+  ansible.builtin.include_tasks: _assert_deployed.yml
+
+- name: Observe the cluster
+  ansible.builtin.include_tasks: _observe.yml
+
+- name: Read the installed build, config ages and backups
+  ansible.builtin.command:
+    argv:
+      - "{{ dst_python }}"
+      - -c
+      - |
+        import glob, json, os, sys
+        root, cluster, keep = sys.argv[1], sys.argv[2], sys.argv[3]
+        shards, mods = json.loads(sys.argv[4]), json.loads(sys.argv[5])
+        out = {}
+        try:
+            out['build'] = open(os.path.join(root, 'server', 'version.txt')).read().strip()
+        except OSError:
+            out['build'] = None
+        import re
+        try:
+            acf = open(os.path.join(root, 'server', 'steamapps', 'appmanifest_343050.acf')).read()
+            m = re.search(r'"buildid"\s+"(\d+)"', acf)
+            out['steam_buildid'] = m.group(1) if m else None
+        except OSError:
+            out['steam_buildid'] = None
+        try:
+            out['update_failed'] = open(os.path.join(root, 'server', '.iaac-update-failed')).read().strip()
+        except OSError:
+            out['update_failed'] = ''
+        files = [os.path.join(cluster, 'cluster.ini')]
+        for s in shards:
+            files += glob.glob(os.path.join(cluster, s, '*.ini')) + glob.glob(os.path.join(cluster, s, '*.lua'))
+        files.append(os.path.join(root, 'config', 'dedicated_server_mods_setup.lua'))
+        out['config_mtime'] = max((os.path.getmtime(f) for f in files if os.path.exists(f)), default=None)
+        dl = {}
+        for m in mods:
+            num = m.split('-', 1)[1]
+            hits = glob.glob(os.path.join(root, 'ugc', 'content', '322330', num, 'modinfo.lua'))
+            hits += glob.glob(os.path.join(root, 'server', 'mods', m, 'modinfo.lua'))
+            dl[m] = bool(hits)
+        out['mods_downloaded'] = dl
+        b = sorted(glob.glob(os.path.join(root, 'backups', '*.tar.gz')))
+        out['backups'] = {'count': len(b), 'newest': [os.path.basename(x) for x in b[-3:]]}
+        print(json.dumps(out))
+      - "{{ _dst_root }}"
+      - "{{ _dst_cluster_path }}"
+      - "{{ dst_backup_keep }}"
+      - "{{ _dst_enabled_shards | map(attribute='name') | list | to_json }}"
+      - "{{ _dst_mods | selectattr('enabled') | map(attribute='key') | list | to_json }}"
+  register: _dst_status_raw
+  changed_when: false
+
+- name: Read the build Steam currently publishes for the server
+  # WHY: a server a build behind its clients is invisible in their LAN list for as long as it
+  # stays behind, while every local check says "running". Compared on the
+  # STEAM build id (appmanifest vs the public branch), never on the game's own version string,
+  # which client and server number differently. From the controller, so the host needs no route.
+  # A lookup failure is reported as CANNOT TELL — never as "matches".
+  ansible.builtin.uri:
+    url: https://api.steamcmd.net/v1/info/343050
+    return_content: true
+    timeout: 15
+  delegate_to: localhost
+  register: _dst_public
+  failed_when: false
+  changed_when: false
+
+- name: Read when the master started
+  ansible.builtin.command:
+    argv:
+      [
+        systemctl,
+        --user,
+        show,
+        "{{ _dst_masters[0].unit }}",
+        --property=ActiveEnterTimestamp,
+        --value,
+      ]
+  register: _dst_status_started
+  changed_when: false
+
+- name: Read the master start time as epoch seconds
+  ansible.builtin.command:
+    argv: [date, --date, "{{ _dst_status_started.stdout | trim }}", +%s]
+  register: _dst_status_started_epoch
+  changed_when: false
+  when:
+    - _dst_obs.target_state == 'active'
+    - _dst_status_started.stdout | trim | length > 0
+
+- name: Report
+  vars:
+    _s: "{{ _dst_status_raw.stdout | from_json }}"
+    _branch: "{{ dst_beta_branch if dst_beta_branch | length > 0 else 'public' }}"
+    _public_buildid: >-
+      {{ ((_dst_public.content | default('{}') | from_json).data | default({}))['343050'].depots.branches[_branch].buildid
+         | default('') if (_dst_public.status | default(0)) == 200 else '' }}
+    _build_verdict: >-
+      {{ 'CANNOT TELL (Steam branch lookup failed: ' ~ (_dst_public.msg | default('no answer')) ~ ')'
+         if (_public_buildid | string | length == 0)
+         else ('CANNOT TELL (no installed appmanifest)' if not _s.steam_buildid
+               else ('MATCHES Steam ' ~ _branch ~ ' (' ~ _public_buildid ~ ')'
+                     if (_s.steam_buildid | string) == (_public_buildid | string)
+                     else ('BEHIND — installed ' ~ _s.steam_buildid ~ ', Steam ' ~ _branch ~ ' is '
+                           ~ _public_buildid ~ '. Clients on the newer build cannot SEE this server. '
+                           ~ 'Restart it (it updates on start).'))) }}
+    _stale: >-
+      {{ _dst_obs.target_state == 'active'
+         and _dst_status_started_epoch.stdout is defined
+         and _s.config_mtime is not none
+         and (_s.config_mtime | float) > (_dst_status_started_epoch.stdout | float) }}
+  ansible.builtin.debug:
+    msg:
+      - "STATE: {{ _dst_obs.state }} (target {{ _dst_obs.target_state }}); units {{ _dst_obs.units }}; listening {{ _dst_obs.listening }}"
+      - >-
+        PLAYERS: {{ _dst_obs.players if _dst_obs.players is not none else 'CANNOT TELL' }}
+        (via {{ _dst_obs.players_source }}{{ '; ' ~ _dst_obs.players_detail if _dst_obs.players_detail else '' }})
+      - >-
+        IDLE: {{ _dst_obs.idle }};
+        {{ ('up for ' ~ _dst_obs.active_for_s ~ 's') if _dst_obs.active_for_s is not none else 'not up' }};
+        last action {{ _dst_obs.last_action if _dst_obs.last_action else '(none since the endpoint started)' }}
+      - "BUILD: game {{ _s.build | default('not installed', true) }}, Steam build {{ _s.steam_buildid | default('?', true) }} — {{ _build_verdict }}"
+      - "{{ ('LAST UPDATE FAILED: ' ~ _s.update_failed) if _s.update_failed else 'Last update: succeeded (no failure marker).' }}"
+      - >-
+        CONFIG: {{ 'NEWER THAN THE RUNNING SERVER — it is still on the old config; dst_action=restart applies it'
+                   if _stale | bool
+                   else ('running server is current with its config files' if _dst_obs.target_state == 'active'
+                         else 'server not running; the next start reads the current files') }}
+      - >-
+        MODS: {{ _s.mods_downloaded if _s.mods_downloaded else 'none declared' }}
+        {{ '— a false entry is declared but NOT downloaded (it downloads at the next start)'
+           if (_s.mods_downloaded.values() | reject | list | length > 0) else '' }}
+      - "BACKUPS: {{ _s.backups.count }} kept (max {{ dst_backup_keep }}); newest {{ _s.backups.newest }}"

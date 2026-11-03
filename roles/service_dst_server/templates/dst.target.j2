@@ -1,0 +1,13 @@
+# {{ ansible_managed }}
+# DST {{ dst_instance }}: the whole cluster. Start/stop THIS, not the shards:
+#   systemctl --user start {{ _dst_target }}     # prepare, then every enabled shard
+#   systemctl --user stop  {{ _dst_target }}     # every shard saves and exits (PartOf=)
+#
+# Enabled (started at login/boot) only when dst_autostart is true — the default is on demand.
+[Unit]
+Description=DST {{ dst_instance }}: cluster {{ dst_cluster_dir_name }} ({{ _dst_enabled_shards | map(attribute='name') | join(' + ') }})
+Wants={{ _dst_enabled_shards | map(attribute='unit') | join(' ') }}
+After={{ _dst_enabled_shards | map(attribute='unit') | join(' ') }}
+
+[Install]
+WantedBy=default.target

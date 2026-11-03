@@ -1,0 +1,223 @@
+---
+# ENTRYPOINT: apply Moonlight stream settings.
+#
+# WRITES ONLY THE KEYS IT IS ASKED TO. Moonlight's config is a Qt .conf holding, among ordinary
+# settings, the client's TLS PRIVATE KEY and every paired host's certificate. Templating the file
+# would mean either carrying those secrets in the repo or destroying the pairing — so this edits
+# individual keys in place and leaves everything else untouched.
+#
+# Every setting defaults to "leave alone" (0 / empty), so a bare run changes nothing even with
+# steamdeck_apply=true. That is deliberate: the risk here is not a wrong value, it is clobbering
+# a hand-tuned device.
+
+- name: Apply role defaults
+  ansible.builtin.include_tasks: setup_vars.yml
+
+- name: Survey before changing anything
+  ansible.builtin.script:
+    cmd: steamdeck_probe.py
+    executable: /usr/bin/python3
+  register: _sd_probe
+  changed_when: false
+
+- name: Parse the survey
+  ansible.builtin.set_fact:
+    _sd: "{{ _sd_probe.stdout[_sd_probe.stdout.find('{') :] | from_json }}"
+    _sd_conf: "{{ (_sd_probe.stdout[_sd_probe.stdout.find('{') :] | from_json).moonlight.config_path }}"
+
+- name: Assert Moonlight is installed
+  ansible.builtin.assert:
+    that:
+      - _sd.moonlight.installed | bool
+    fail_msg: "Moonlight is not installed; nothing to configure."
+    quiet: true
+
+# THE CACHED-IP FIX. Moonlight records `localaddress` from mDNS discovery — a DHCP lease, which
+# goes stale the moment the host's lease moves, leaving the client looking for a machine that is
+# not there and reporting the host offline. It has no hostname to fall back on.
+#
+# `manualaddress` is the user-supplied field and is tried alongside the discovered one, so
+# setting it to a DNS NAME is additive: discovery keeps working, and when the lease moves the
+# name still resolves. It does not touch the pairing.
+- name: Find the host entry to repoint
+  ansible.builtin.set_fact:
+    _sd_host_idx: >-
+      {{ (_sd.moonlight.hosts | dict2items
+          | selectattr('value.hostname', 'defined')
+          | selectattr('value.hostname', 'equalto', _sd_target_short)
+          | map(attribute='key') | list | first) | default('', true) }}
+  vars:
+    # Moonlight stores the host's own short hostname, not its FQDN.
+    _sd_target_short: "{{ steamdeck_moonlight_host.split('.') | first }}"
+  when: steamdeck_moonlight_host | length > 0
+
+- name: Report the host repoint
+  ansible.builtin.debug:
+    msg: >-
+      {{ ('Moonlight host entry [' ~ _sd_host_idx ~ '] (' ~ steamdeck_moonlight_host ~ '): '
+          ~ 'manualaddress -> ' ~ _sd_target_fqdn)
+         if (_sd_host_idx | length) > 0
+         else ('No paired Moonlight host named ' ~ (steamdeck_moonlight_host.split('.') | first)
+               ~ ' — pair it on the device first; this role does not create pairings.') }}
+  vars:
+    _sd_target_fqdn: "{{ hostvars[steamdeck_moonlight_host].ansible_host | default(steamdeck_moonlight_host) }}"
+  when: steamdeck_moonlight_host | length > 0
+
+- name: Work out the changes
+  ansible.builtin.set_fact:
+    _sd_changes: >-
+      {{ ([
+           {'key': 'fps', 'to': steamdeck_moonlight_fps | string}
+             if (steamdeck_moonlight_fps | int) > 0 else None,
+           {'key': 'bitrate', 'to': steamdeck_moonlight_bitrate | string}
+             if (steamdeck_moonlight_bitrate | int) > 0 else None,
+           {'key': 'hdr', 'to': steamdeck_moonlight_hdr}
+             if (steamdeck_moonlight_hdr | length) > 0 else None,
+         ] | reject('none') | list) }}
+
+- name: Read the current per-app HDR values
+  # Reported as well as written, because the per-app value is the one a stream uses and the
+  # global is only a default for newly-paired apps — a plan that showed only the global would
+  # say "nothing to do" while HDR was off for every launchable app.
+  ansible.builtin.set_fact:
+    _sd_app_hdr_now: "{{ _sd.moonlight.app_hdr | default({}) }}"
+
+- name: Report the plan
+  ansible.builtin.debug:
+    msg: "{{ _report.splitlines() }}"
+  vars:
+    _s: "{{ _sd.moonlight.settings }}"
+    _report: |
+      {{ 'APPLYING' if (steamdeck_apply | bool) else 'WOULD APPLY' }} to {{ _sd_conf }}:
+      {% for c in _sd_changes %}
+        {{ c.key }}: {{ _s[c.key] | default('(unset)') }} -> {{ c.to }}
+      {% endfor %}
+      {{ '  (no settings requested — every option defaults to leave-alone)' if (_sd_changes | length) == 0 else '' }}
+      {% if (steamdeck_moonlight_hdr | length) > 0 and _sd_app_hdr_now %}
+      per-app HDR ({{ _sd_app_hdr_now | length }} paired app(s)):
+      {% for k, v in _sd_app_hdr_now.items() | sort %}
+        {{ k }}: {{ v }}{{ ' -> ' ~ steamdeck_moonlight_hdr if v != steamdeck_moonlight_hdr else '  (already)' }}
+      {% endfor %}
+      {{ 'NOTE the per-app value is what a stream actually uses; the global above is only the
+      default for newly-paired apps. A true global with false apps means HDR is OFF for
+      everything launchable.' if (_sd_app_hdr_now.values() | reject('equalto', steamdeck_moonlight_hdr) | list | length) > 0 else '' }}
+      {% endif %}
+      {{ '' if (steamdeck_apply | bool) else 'Re-run with steamdeck_apply=true.' }}
+
+- name: Stop Moonlight before editing its config
+  # Moonlight REWRITES this file wholesale on exit, so an edit made while it is running is
+  # discarded the moment the app closes — silently, and long after the play reported success.
+  ansible.builtin.command:
+    cmd: pkill -f com.moonlight_stream.Moonlight
+  register: _sd_kill
+  changed_when: (_sd_kill.rc | int) == 0
+  failed_when: false
+  when:
+    - steamdeck_apply | bool
+    - (_sd_changes | length > 0) or ((_sd_host_idx | default('') | length) > 0)
+
+- name: Point the host entry at a DNS name
+  ansible.builtin.lineinfile:
+    path: "{{ _sd_conf }}"
+    regexp: "^{{ _sd_host_idx }}\\\\manualaddress="
+    line: "{{ _sd_host_idx }}\\manualaddress={{ hostvars[steamdeck_moonlight_host].ansible_host | default(steamdeck_moonlight_host) }}"
+    backup: true
+  register: _sd_manual
+  when:
+    - steamdeck_apply | bool
+    - steamdeck_moonlight_host | length > 0
+    - (_sd_host_idx | default('') | length) > 0
+
+- name: Apply the settings
+  ansible.builtin.lineinfile:
+    path: "{{ _sd_conf }}"
+    regexp: "^{{ item.key }}="
+    line: "{{ item.key }}={{ item.to }}"
+    backup: true
+  loop: "{{ _sd_changes }}"
+  loop_control:
+    label: "{{ item.key }}={{ item.to }}"
+  when:
+    - steamdeck_apply | bool
+    - _sd_changes | length > 0
+
+- name: Find the per-app HDR keys
+  # MOONLIGHT KEEPS HDR TWICE. The global `hdr=` is only a default for NEW app entries; every
+  # already-paired app carries its own `<host>\apps\<n>\hdr=`, and that one wins. With the
+  # global true and every app entry false, HDR is off for everything actually launchable — and
+  # flipping the global alone would change nothing visible, which is the worst kind of green run.
+  #
+  # Read from the file rather than assumed, because the number of apps and their indices depend
+  # on what has been paired.
+  #
+  # `argv`, NOT a cmd string. The config path contains SPACES — ".../config/Moonlight Game
+  # Streaming Project/Moonlight.conf" — and ansible.builtin.command splits a cmd string on
+  # whitespace, so grep received four nonexistent paths, returned rc=2 with empty stdout, and
+  # the apply loop below silently iterated over nothing. failed_when:false made that look like
+  # success: the play reported changed=0 having done nothing at all.
+  ansible.builtin.command:
+    argv:
+      - grep
+      - -oE
+      - "^[0-9]+\\\\apps\\\\[0-9]+\\\\hdr="
+      - "{{ _sd_conf }}"
+  register: _sd_app_hdr
+  changed_when: false
+  # rc 1 is "no matches", which is legitimate when nothing is paired. Anything else is a real
+  # error — an unreadable or missing file — and must not pass as an empty result.
+  failed_when: (_sd_app_hdr.rc | int) not in [0, 1]
+  when:
+    - steamdeck_apply | bool
+    - (steamdeck_moonlight_hdr | length) > 0
+
+- name: Apply HDR to every paired app
+  ansible.builtin.lineinfile:
+    path: "{{ _sd_conf }}"
+    regexp: "^{{ item | regex_escape }}"
+    line: "{{ item }}{{ steamdeck_moonlight_hdr }}"
+    backup: true
+  loop: "{{ _sd_app_hdr.stdout_lines | default([]) }}"
+  loop_control:
+    label: "{{ item }}{{ steamdeck_moonlight_hdr }}"
+  when:
+    - steamdeck_apply | bool
+    - (steamdeck_moonlight_hdr | length) > 0
+
+- name: Read the settings back
+  # From the file, not from the task result: lineinfile reports what it wrote, which proves
+  # nothing about what Moonlight will read.
+  ansible.builtin.script:
+    cmd: steamdeck_probe.py
+    executable: /usr/bin/python3
+  register: _sd_after
+  changed_when: false
+  when:
+    - steamdeck_apply | bool
+    - _sd_changes | length > 0
+
+- name: Assert every change landed
+  ansible.builtin.assert:
+    that:
+      - _sd_now.moonlight.settings[item.key] | default('') == item.to
+    fail_msg: >-
+      {{ item.key }} reads back as
+      '{{ _sd_now.moonlight.settings[item.key] | default('(missing)') }}', expected '{{ item.to }}'.
+    quiet: true
+  loop: "{{ _sd_changes }}"
+  loop_control:
+    label: "{{ item.key }}"
+  vars:
+    _sd_now: "{{ _sd_after.stdout[_sd_after.stdout.find('{') :] | from_json }}"
+  when:
+    - steamdeck_apply | bool
+    - _sd_changes | length > 0
+
+- name: Confirm
+  ansible.builtin.debug:
+    msg: >-
+      Applied {{ _sd_changes | length }} setting(s). Moonlight was stopped for the edit — it
+      rewrites this file on exit, so a change made while it is running is silently discarded.
+      Relaunch it on the Deck.
+  when:
+    - steamdeck_apply | bool
+    - _sd_changes | length > 0

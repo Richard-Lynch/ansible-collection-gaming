@@ -1,0 +1,36 @@
+---
+# ENTRYPOINT: start the cluster, and wait until it can actually be joined.
+#
+#   dst_action=start
+#
+# "Started" is not "joinable". systemd reports a shard active as soon as its container runs, while
+# the world takes another minute or more to load — and on the very first start, prepare downloads
+# the whole server first. Success here is the property a client needs: EVERY enabled shard's UDP
+# port bound, read through the same observer the control endpoint uses.
+
+- name: Deployed, with the current image?
+  ansible.builtin.include_tasks: _assert_deployed.yml
+  vars:
+    _dst_require_image: true
+
+- name: Start the cluster target
+  # Blocks while prepare runs (backup, steamcmd update, mod download) — minutes on a first start.
+  ansible.builtin.systemd_service:
+    name: "{{ _dst_target }}"
+    scope: user
+    state: started
+  register: _dst_started
+
+- name: Wait until every shard is listening
+  ansible.builtin.include_tasks: _wait_ready.yml
+
+- name: Report
+  ansible.builtin.debug:
+    msg:
+      - "{{ 'STARTED' if _dst_started is changed else 'ALREADY RUNNING' }}: {{ _dst_obs.state }}, listening {{ _dst_obs.listening }}"
+      - "players: {{ _dst_obs.players }} (via {{ _dst_obs.players_source }}) — idle shutdown: {{ _dst_obs.idle }}"
+      - >-
+        Join: {{ ansible_default_ipv4.address | default(ansible_host) }}:{{ _dst_masters[0].server_port }}
+        {{ '(LAN-only: from another VLAN connect by address — c_connect("'
+           ~ (ansible_default_ipv4.address | default(ansible_host)) ~ '", '
+           ~ _dst_masters[0].server_port ~ ') in the game console)' if dst_lan_only | bool else '' }}

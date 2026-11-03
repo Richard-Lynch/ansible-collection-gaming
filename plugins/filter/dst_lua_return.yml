@@ -1,0 +1,25 @@
+# Copyright: (c) 2026, Richard Lynch
+# GNU General Public License v3.0+ (see https://www.gnu.org/licenses/gpl-3.0.txt)
+---
+DOCUMENTATION:
+  name: dst_lua_return
+  short_description: Render a complete Lua file that returns a value
+  author: Richard Lynch (@Richard-Lynch)
+  description:
+    - "Each header line becomes a C(--) comment, then C(return <value>) as P(richard_lynch.gaming.to_dst_lua#filter) renders it."
+  options:
+    _input:
+      description: "The value the file returns."
+      type: raw
+      required: true
+    header:
+      description: "Comment text placed at the top of the file."
+      type: str
+EXAMPLES: |
+  - name: Use dst_lua_return
+    ansible.builtin.debug:
+      msg: "{{ overrides | richard_lynch.gaming.dst_lua_return(header='Managed by Ansible') }}"
+RETURN:
+  _value:
+    description: "The Lua file text."
+    type: str

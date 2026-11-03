@@ -1,0 +1,13 @@
+# {{ ansible_managed }}
+# DST {{ dst_instance }}: back up, then install/update the server and its Workshop mods.
+# Pulled in by every shard unit (Requires=), so it runs once per start transaction.
+[Unit]
+Description=DST {{ dst_instance }}: prepare (backup, steamcmd update, mod download)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+# The FIRST run downloads the whole server; later ones are a quick no-op update.
+TimeoutStartSec=3600
+ExecStart={{ _dst_dirs.bin }}/dst-prepare-host.sh

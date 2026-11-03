@@ -1,0 +1,116 @@
+---
+# ENTRYPOINT: survey the device. Writes nothing.
+#
+# Replaces a pile of ad-hoc SSH. The facts worth knowing live in unrelated places — DMI for the
+# model, sysfs for the panel, flatpak for applications, a Qt .conf for the streaming client,
+# Decky's directory for plugins — and several need parsing rather than grepping.
+#
+# THE MODEL IS LOAD-BEARING, not trivia: 'Galileo' is the OLED Deck with a 90Hz panel, 'Jupiter'
+# the LCD at 60Hz. Every refresh-rate recommendation is gated on it, so that advice which is
+# right for one is not given for the other.
+#
+# Secrets are redacted by the probe itself — Moonlight's config holds the client's TLS private
+# key, and a survey that dumped the file would put it in the play log.
+
+- name: Apply role defaults
+  ansible.builtin.include_tasks: setup_vars.yml
+
+- name: Run the survey
+  ansible.builtin.script:
+    cmd: steamdeck_probe.py
+    executable: /usr/bin/python3
+  register: _sd_probe
+  changed_when: false
+  check_mode: false # a read: under --check the report must still have something to parse
+
+- name: Parse the survey
+  # The target's shell emits terminal escape sequences before real output; strip anything before
+  # the first '{' rather than trusting stdout to start cleanly — a stray escape otherwise fails
+  # the parse.
+  ansible.builtin.set_fact:
+    _sd: "{{ _sd_probe.stdout[_sd_probe.stdout.find('{') :] | from_json }}"
+
+- name: Report the device
+  ansible.builtin.debug:
+    msg: "{{ _report.splitlines() }}"
+  vars:
+    _hw: "{{ _sd.hardware }}"
+    _os: "{{ _sd.os }}"
+    _report: |
+      ===== DEVICE =====
+      model      : {{ _hw.model_name }} ({{ _hw.model }})
+      panel      : {{ _hw.panel_hz | default('?') }}Hz  {{ _hw.panel_modes | join(', ') }}
+      battery    : {{ _hw.battery_percent | default('?') }}%
+      os         : {{ _os.pretty_name }}  kernel {{ _os.kernel }}
+      hostname   : {{ _os.hostname }}
+      rootfs     : {{ 'READ-ONLY (immutable)' if _os.rootfs_readonly else 'writable' }}
+      sudo       : {{ 'passwordless' if _os.sudo_passwordless else 'NEEDS A PASSWORD — nothing privileged can run unattended' }}
+
+      ===== APPLICATIONS ({{ _sd.flatpaks | length }} flatpaks) =====
+      {{ _sd.flatpaks.keys() | list | join(', ') | wordwrap(88) }}
+
+      ===== DECKY =====
+      {{ ('installed, ' ~ (_sd.decky.plugins | length) ~ ' plugins: ' ~ (_sd.decky.plugins | join(', ')))
+         if _sd.decky.installed else 'not installed' }}
+      {{ 'These are hand-installed customisations. This role does NOT reconcile them — doing so
+      would silently undo choices made on the device.' if _sd.decky.installed else '' }}
+
+- name: Report the network interfaces
+  # The permanent MAC is what a DHCP reservation must be keyed to, and WoL capability decides
+  # whether the device can be woken on demand at all — both are the reason this section exists.
+  ansible.builtin.debug:
+    msg: "{{ _report.splitlines() }}"
+  vars:
+    _report: |
+      ===== NETWORK =====
+      {% for iface, n in (_sd.network | default({})).items() %}
+      {{ iface }}
+        mac (in use) : {{ n.current_mac }}{{ '  <- RANDOMISED' if n.randomised else '' }}
+        mac (permanent): {{ n.permanent_mac | default('(not reported)', true) }}
+        link         : {{ 'up' if n.carrier else 'down' }}
+        wake-on-lan  : {{ n.wol_enabled | default('?', true) }} (supports: {{ n.wol_supported | default('none', true) }})
+      {% endfor %}
+
+      A DHCP reservation must use the PERMANENT address. 'g' in the supported list means the
+      adapter can wake on a magic packet; 'd' as the current value means it is disabled.
+
+- name: Report the filesystems
+  # WHERE CONTENT CAN LIVE, not just how much room there is. exFAT and vfat have no POSIX
+  # permissions or symlinks, so Steam cannot install a Windows game to one however much space it
+  # shows — which is the usual reason a large SD card "does not work" for Proton titles.
+  ansible.builtin.debug:
+    msg: "{{ _report.splitlines() }}"
+  vars:
+    _report: |
+      ===== STORAGE =====
+      {% for name, d in (_sd.storage | default({})).items() | sort %}
+      {{ '%-14s' | format(name) }} {{ '%7.1f' | format(d.free_gb) }}GB free of {{ '%7.1f' | format(d.total_gb) }}GB ({{ d.used_percent }}% used)
+        {{ d.fstype | default('?') }} on {{ d.device | default('?') }}
+      {{- '   — no Proton prefixes on this filesystem' if d.supports_prefixes is false else '' }}
+      {% endfor %}
+
+- name: Report what is worth changing
+  # Findings carry the observed AND suggested value, so this is a diff rather than advice — and
+  # a finding disappears by itself once the underlying value is fixed.
+  ansible.builtin.debug:
+    msg: "{{ _report.splitlines() }}"
+  vars:
+    _recs: "{{ _sd.recommendations }}"
+    _report: |
+      ===== FINDINGS ({{ _recs | length }}) =====
+      {% for r in _recs %}
+      [{{ r.severity | upper }}] {{ r.id }}
+        observed : {{ r.observed }}
+        suggested: {{ r.suggested }}
+        why      : {{ r.why | wordwrap(76) | indent(19) }}
+      {% endfor %}
+      {{ 'Nothing to change.' if (_recs | length) == 0 else '' }}
+
+- name: Save the survey for later comparison
+  ansible.builtin.copy:
+    content: "{{ _sd | to_nice_json }}\n"
+    dest: "{{ steamdeck_probe_output }}"
+    mode: "0644"
+  delegate_to: localhost
+  changed_when: false
+  when: steamdeck_probe_output | length > 0

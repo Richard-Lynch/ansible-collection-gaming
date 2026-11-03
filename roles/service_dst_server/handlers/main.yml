@@ -1,0 +1,7 @@
+---
+- name: Reload the user manager
+  # After unit files are REMOVED (uninstall). A deploy reloads inline instead, because it must
+  # enable and start units in the same run, before handlers would fire.
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+    scope: user

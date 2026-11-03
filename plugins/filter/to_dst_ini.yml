@@ -1,0 +1,29 @@
+# Copyright: (c) 2026, Richard Lynch
+# GNU General Public License v3.0+ (see https://www.gnu.org/licenses/gpl-3.0.txt)
+---
+DOCUMENTATION:
+  name: to_dst_ini
+  short_description: Render sections as Don't Starve Together's INI format
+  author: Richard Lynch (@Richard-Lynch)
+  description:
+    - "Renders C({SECTION: {key: value}}) keeping the given section and key order; C(extra) is merged per key on top."
+    - "Section names must be upper case and keys lower case; a value that is not a scalar or contains a newline raises. A section with no non-null value is omitted."
+  options:
+    _input:
+      description: "The sections to render."
+      type: dict
+      required: true
+    header:
+      description: "Comment text placed at the top of the file."
+      type: str
+    extra:
+      description: "Extra sections merged on top, extra winning per key."
+      type: dict
+EXAMPLES: |
+  - name: Use to_dst_ini
+    ansible.builtin.debug:
+      msg: "{{ {'NETWORK': {'cluster_name': 'Example'}} | richard_lynch.gaming.to_dst_ini }}"
+RETURN:
+  _value:
+    description: "The INI file text."
+    type: str

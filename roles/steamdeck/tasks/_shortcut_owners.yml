@@ -1,0 +1,45 @@
+---
+# INTERNAL: attribute every shortcut in `_sd_sc.shortcuts` to its OWNER, as `_sd_sc_owners`
+# (index -> label). Shared by shortcuts_report (the per-entry label) and shortcuts (the plan's
+# "left alone" breakdown), and included directly by molecule so the test exercises this file
+# rather than a copy of it (MOLMIRROR-01).
+#
+# WHY NOT "added by hand". Calling every untagged entry hand-made is often false — EmuDeck's
+# Steam ROM Manager writes its own launcher entries — and the wrong word misleads whoever reads
+# the report about where an entry came from. Untagged says only "not ours"; WHO made it is
+# a separate question, answered from evidence on the entry (steamdeck_shortcut_owners), and
+# "origin unknown" when nothing matches rather than a guess.
+#
+# Three outcomes, in this order:
+#   1. tagged 'iaac'                 -> managed by this role (same rule as the merge tool's
+#                                       is_managed(), so the report and the writer agree)
+#   2. Exe matches an owner's regex  -> that owner (first match wins)
+#   3. neither                       -> origin unknown
+
+- name: Start from an empty attribution
+  # Reset, not defaulted: this file runs more than once per play (the plan includes the report),
+  # and a set_fact accumulator would otherwise carry the previous call's entries (RESOLVE-01's
+  # shape).
+  ansible.builtin.set_fact:
+    _sd_sc_owners: {}
+
+- name: Attribute each shortcut to its owner
+  ansible.builtin.set_fact:
+    _sd_sc_owners: "{{ _sd_sc_owners | combine({_sd_sc_item.key: _label}) }}"
+  loop: "{{ (_sd_sc.shortcuts | default({})) | dict2items }}"
+  loop_control:
+    loop_var: _sd_sc_item
+    label: "{{ _sd_sc_item.value.AppName | default('(unnamed)') }}"
+  vars:
+    _tagged: "{{ 'iaac' in ((_sd_sc_item.value.tags | default({})).values() | list) }}"
+    _exe: "{{ _sd_sc_item.value.Exe | default('') }}"
+    # An empty render is None, not '', under ansible-core's native templating — hence the
+    # default('', true) wherever it is read.
+    _owner: >-
+      {%- for o in steamdeck_shortcut_owners if _exe is search(o.exe_search) -%}
+      {{- o.owner if loop.first else '' -}}
+      {%- endfor -%}
+    _label: >-
+      {{ 'yes — iaac' if (_tagged | bool)
+         else ('no — owned by ' ~ _owner) if (_owner | default('', true) | length) > 0
+         else 'no — origin unknown (not tagged by iaac)' }}

@@ -1,0 +1,28 @@
+# Copyright: (c) 2026, Richard Lynch
+# GNU General Public License v3.0+ (see https://www.gnu.org/licenses/gpl-3.0.txt)
+---
+DOCUMENTATION:
+  name: dst_mods_setup
+  short_description: Render dedicated_server_mods_setup.lua from a mod list
+  author: Richard Lynch (@Richard-Lynch)
+  description:
+    - "One C(ServerModSetup) line per enabled mod (each id once), then one C(ServerModCollectionSetup) line per collection."
+  options:
+    _input:
+      description: "Mods, each a dict with C(id) and optional C(name) and C(enabled)."
+      type: list
+      required: true
+    collections:
+      description: "Workshop collection ids."
+      type: list
+    header:
+      description: "Comment text placed at the top of the file."
+      type: str
+EXAMPLES: |
+  - name: Use dst_mods_setup
+    ansible.builtin.debug:
+      msg: "{{ mods | richard_lynch.gaming.dst_mods_setup(['9999']) }}"
+RETURN:
+  _value:
+    description: "The Lua file text."
+    type: str

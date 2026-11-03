@@ -1,0 +1,92 @@
+---
+# ENTRYPOINT: restore the cluster from a backup archive — the one NAMED by dst_restore_confirm.
+#
+#   dst_action=backup                         # list them
+#   dst_action=restore dst_restore_confirm=dst-Cluster_1-20000101T000000-pre-start.tar.gz
+#
+# TYPING THE FILE NAME IS THE CONFIRMATION. A boolean is too easy to carry over from a previous
+# command; naming the archive is deliberate, and it is also the selection.
+#
+# NOTHING IS DELETED: the current cluster directory is renamed aside to
+# <cluster>.before-restore-<timestamp> first, so a restore of the wrong archive is itself
+# reversible by hand.
+#
+# THE ARCHIVE BRINGS BACK ITS OWN CONFIG FILES (cluster.ini, modoverrides.lua, ...) along with the
+# world. The declared configuration is then re-applied on top, so a restore changes the WORLD and
+# never quietly reverts the config — inventory stays the source of truth.
+
+- name: Deployed?
+  ansible.builtin.include_tasks: _assert_deployed.yml
+
+- name: Observe the cluster
+  ansible.builtin.include_tasks: _observe.yml
+
+- name: List the backups
+  ansible.builtin.find:
+    paths: "{{ _dst_dirs.backups }}"
+    patterns: "*.tar.gz"
+  register: _dst_restore_backups
+
+- name: HARD GATE — a named archive, a stopped cluster
+  ansible.builtin.assert:
+    that:
+      - dst_restore_confirm | length > 0
+      - dst_restore_confirm in (_dst_restore_backups.files | map(attribute='path') | map('basename') | list)
+      - _dst_obs.state == 'stopped'
+    fail_msg: >-
+      Name the archive to restore as dst_restore_confirm (got '{{ dst_restore_confirm }}'), one of
+      {{ _dst_restore_backups.files | map(attribute='path') | map('basename') | sort | list }} — and
+      the cluster must be stopped (it is {{ _dst_obs.state }}).
+    quiet: true
+
+- name: Check the archive holds exactly this cluster
+  # An archive of a different cluster (another dst_cluster_dir_name) would extract BESIDE the live
+  # one and restore nothing while reporting success.
+  ansible.builtin.command:
+    argv: [tar, -tzf, "{{ _dst_dirs.backups }}/{{ dst_restore_confirm }}"]
+  register: _dst_restore_list
+  changed_when: false
+
+- name: HARD GATE — every entry is under the cluster directory
+  ansible.builtin.assert:
+    that:
+      - _dst_restore_list.stdout_lines | length > 0
+      - >-
+        _dst_restore_list.stdout_lines
+        | reject('match', '^' ~ (dst_cluster_dir_name | regex_escape) ~ '(/|$)') | list | length == 0
+    fail_msg: >-
+      {{ dst_restore_confirm }} does not contain only '{{ dst_cluster_dir_name }}/...' (first entries:
+      {{ _dst_restore_list.stdout_lines[:5] }}). Refusing to extract it.
+    quiet: true
+
+- name: Move the current cluster aside
+  ansible.builtin.command:
+    argv:
+      - mv
+      - --no-clobber
+      - "{{ _dst_cluster_path }}"
+      - "{{ _dst_cluster_path }}.before-restore-{{ now(utc=true).strftime('%Y%m%dT%H%M%SZ') }}"
+    removes: "{{ _dst_cluster_path }}"
+  register: _dst_restore_moved
+
+- name: Extract the archive
+  ansible.builtin.unarchive:
+    src: "{{ _dst_dirs.backups }}/{{ dst_restore_confirm }}"
+    dest: "{{ _dst_root }}/data/DoNotStarveTogether"
+    remote_src: true
+
+- name: Re-apply the declared configuration over the restored world
+  # dst_apply is a set_fact (the resolver), so an include-level vars: could not override it —
+  # set_fact outranks task vars. Set it the same way.
+  ansible.builtin.set_fact:
+    dst_apply: true
+
+- name: Write the declared cluster files
+  ansible.builtin.include_tasks: config.yml
+
+- name: Report
+  ansible.builtin.debug:
+    msg:
+      - "Restored {{ dst_restore_confirm }} into {{ _dst_cluster_path }}; declared config re-applied."
+      - "Previous cluster kept at: {{ _dst_restore_moved.cmd[-1] if _dst_restore_moved is changed else '(there was none)' }}"
+      - "Start it with dst_action=start."

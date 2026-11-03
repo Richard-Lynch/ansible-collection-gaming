@@ -1,0 +1,194 @@
+---
+# Resolve options, derive every path/unit name from them, and VALIDATE the declared cluster —
+# included first by every entrypoint.
+#
+# Everything the other task files use is derived HERE, once, so a unit name or a path cannot be
+# spelled two ways in two files. Derivations are split across tasks because keys within one
+# set_fact template against PRE-task values and cannot see each other.
+#
+# NESTED DEFAULTS ARE APPLIED HERE, NOT BY THE ARGSPEC. Ansible's role argument validation checks
+# a list-of-dicts' suboptions but does NOT inject their defaults, so `item.enabled` on a shard that
+# omitted it is undefined. `_dst_shards` / `_dst_mods` are the normalised copies every other file
+# reads — never `dst_shards` / `dst_mods` directly.
+
+- name: Resolve declared options over their generated defaults
+  ansible.builtin.include_tasks: _resolve_defaults.yml
+
+- name: Check the constraints the argspec cannot enforce
+  ansible.builtin.include_tasks: _argspec_guards.yml
+
+- name: Derive the root directory
+  # THE THIRD RULE: derived from the connecting user's facts, never a hardcoded home.
+  ansible.builtin.set_fact:
+    _dst_root: >-
+      {{ dst_root if (dst_root | length > 0)
+         else (ansible_env.HOME ~ '/.local/share/iaac-dst/' ~ dst_instance) }}
+
+- name: Derive paths and unit names
+  ansible.builtin.set_fact:
+    _dst_unit_dir: "{{ ansible_env.HOME }}/.config/systemd/user"
+    _dst_target: "{{ dst_instance }}.target"
+    _dst_prepare_unit: "{{ dst_instance }}-prepare.service"
+    _dst_control_unit: "{{ dst_instance }}-control.service"
+    _dst_prepare_container: "{{ dst_instance }}-prepare"
+    _dst_dirs:
+      server: "{{ _dst_root }}/server"
+      steamcmd: "{{ _dst_root }}/steamcmd"
+      data: "{{ _dst_root }}/data"
+      ugc: "{{ _dst_root }}/ugc"
+      config: "{{ _dst_root }}/config"
+      build: "{{ _dst_root }}/build"
+      backups: "{{ _dst_root }}/backups"
+      state: "{{ _dst_root }}/state"
+      bin: "{{ _dst_root }}/bin"
+    _dst_cluster_path: "{{ _dst_root }}/data/DoNotStarveTogether/{{ dst_cluster_dir_name }}"
+    # Comment header for every generated game file. Deliberately carries NO timestamp, so an
+    # unchanged config renders byte-identically and a deploy reports changed only when it is.
+    _dst_header: >-
+      MANAGED BY ANSIBLE (roles/service_dst_server) — edits here are overwritten on the next deploy.
+    # `:z` (SHARED SELinux label), not `:Z`: every shard container and the prepare container
+    # mount the SAME directories. `:Z` relabels a volume private to ONE container, and the next
+    # container to mount it is then denied by SELinux on an enforcing host (Fedora and its Atomic variants).
+    _dst_volumes:
+      - "{{ _dst_root }}/server:/server:z"
+      - "{{ _dst_root }}/data:/data:z"
+      - "{{ _dst_root }}/ugc:/ugc:z"
+      # steamcmd's OWN state (its client config, library folders, depot cache). Ephemeral, every
+      # update after the first install failed — "Update state (0x3) reconfiguring" then
+      # "Error! App '343050' state is 0x6", silently leaving the server a build behind the clients
+      # (e.g. server build 760049 against client 760178, so the clients' LAN list hid the server).
+      - "{{ _dst_root }}/steamcmd:/root/.local/share/Steam:z"
+      - "{{ _dst_root }}/config:/config:ro,z"
+
+- name: Derive the image reference
+  # The tag is a hash of the image's BUILD INPUTS, rendered on the controller from the role's own
+  # files — so it is known before anything exists on the host (status/start can name it), an
+  # unchanged Containerfile never rebuilds, and a changed one is a new tag the units then run.
+  ansible.builtin.set_fact:
+    _dst_image: >-
+      {{ dst_image_name }}:{{ (lookup('ansible.builtin.template', 'Containerfile.j2')
+                               ~ lookup('ansible.builtin.file', 'image/dst-shard.sh')
+                               ~ lookup('ansible.builtin.file', 'image/dst-console.sh')
+                               ~ lookup('ansible.builtin.file', 'image/dst-prepare.sh'))
+                              | hash('sha256') | truncate(12, true, '', 0) }}
+
+- name: Reset the accumulators
+  # The two loops below APPEND, and this file can be included more than once per play (restart =
+  # stop + start). Without the reset a second inclusion would double every shard and mod.
+  ansible.builtin.set_fact:
+    _dst_shards: []
+    _dst_mods: []
+
+- name: Normalise the shard list
+  # Defaults filled per shard (see the header), plus the derived unit/container names. Done with a
+  # loop + combine so each element is built from its OWN item — never a whole-dict map with
+  # item.value, which gives every key the last item.
+  ansible.builtin.set_fact:
+    _dst_shards: >-
+      {{ _dst_shards + [
+           {'is_master': false, 'enabled': true, 'id': none, 'worldgen_preset': '',
+            'worldgen_overrides': {}, 'leveldata_override': {}, 'server_ini_extra': {}}
+           | combine(_shard)
+           | combine({'unit': dst_instance ~ '-' ~ (_shard.name | lower) ~ '.service',
+                      'container': dst_instance ~ '-' ~ (_shard.name | lower),
+                      'path': _dst_cluster_path ~ '/' ~ _shard.name})
+         ] }}
+  loop: "{{ dst_shards }}"
+  loop_control:
+    loop_var: _shard
+    label: "{{ _shard.name | default('(unnamed)') }}"
+
+- name: Normalise the mod list
+  ansible.builtin.set_fact:
+    _dst_mods: >-
+      {{ _dst_mods + [
+           {'name': '', 'enabled': true, 'shards': [], 'config': {}}
+           | combine(_mod)
+           | combine({'key': _mod.id | richard_lynch.gaming.dst_mod_key})
+         ] }}
+  loop: "{{ dst_mods }}"
+  loop_control:
+    loop_var: _mod
+    label: "{{ _mod.id | default('(no id)') }}"
+
+- name: Derive shard sets
+  ansible.builtin.set_fact:
+    _dst_enabled_shards: "{{ _dst_shards | selectattr('enabled') | list }}"
+    _dst_masters: "{{ _dst_shards | selectattr('is_master') | list }}"
+    _dst_shard_names: "{{ _dst_shards | map(attribute='name') | list }}"
+    _dst_all_ports: >-
+      {{ (_dst_shards | map(attribute='server_port') | list)
+         + (_dst_shards | map(attribute='master_server_port') | list)
+         + (_dst_shards | map(attribute='authentication_port') | list)
+         + [dst_shard_master_port | int] }}
+
+- name: HARD GATE — the cluster's shape must be valid
+  ansible.builtin.assert:
+    that:
+      - _dst_shards | length > 0
+      - _dst_masters | length == 1
+      - _dst_masters[0].enabled | bool
+      - _dst_shard_names | unique | length == _dst_shard_names | length
+      - _dst_shard_names | select('match', '^[A-Za-z][A-Za-z0-9_]*$') | list | length == _dst_shard_names | length
+      - _dst_shard_names | map('lower') | unique | length == _dst_shard_names | length
+      - _dst_all_ports | map('int') | unique | length == _dst_all_ports | length
+      - (dst_control_port | int) not in (_dst_all_ports | map('int') | list)
+    fail_msg: >-
+      dst_shards is not a valid cluster. Need: at least one shard; exactly ONE is_master, and it
+      enabled; unique names of letters/digits/_ starting with a letter, unique even
+      case-insensitively (they become unit names); and every port — each shard's server_port,
+      master_server_port and authentication_port, plus dst_shard_master_port and
+      dst_control_port — distinct. Got shards {{ _dst_shard_names }}, masters
+      {{ _dst_masters | map(attribute='name') | list }}, ports {{ _dst_all_ports }}.
+    quiet: true
+
+- name: HARD GATE — secrets and access lists must be declared consistently
+  ansible.builtin.assert:
+    that:
+      - (dst_offline | bool) or (dst_cluster_token | length > 0) or (dst_cluster_token_item | length > 0)
+      - dst_control_allow | select('match', '^\d{1,3}(\.\d{1,3}){3}$') | list | length == dst_control_allow | length
+      - (dst_admins + dst_whitelist + dst_blocklist) | reject('match', '^KU_[A-Za-z0-9_-]+$') | list | length == 0
+    fail_msg: >-
+      Pass dst_cluster_token (the Klei cluster token) or declare dst_cluster_token_item (the
+      1Password item holding it) unless dst_offline is true; dst_control_allow must be exact IPv4 addresses (got
+      {{ dst_control_allow }}); admin/white/block lists must hold Klei ids of the form KU_xxxx.
+    quiet: true
+
+- name: HARD GATE — mods must name real shards and appear once
+  ansible.builtin.assert:
+    that:
+      - _dst_mods | map(attribute='key') | unique | length == _dst_mods | length
+      - _dst_mods | map(attribute='shards') | flatten | difference(_dst_shard_names) | length == 0
+    fail_msg: >-
+      dst_mods: each mod may be declared once (got {{ _dst_mods | map(attribute='key') | list }}),
+      and a mod's `shards` may only name declared shards {{ _dst_shard_names }}.
+    quiet: true
+
+- name: Collect advisory findings
+  # Valid, but probably not what was meant. Reported on every run rather than refused, because
+  # each has a legitimate use.
+  ansible.builtin.set_fact:
+    _dst_advisories: >-
+      {{ (['Shard ' ~ s.name ~ ' is not the master and has no worldgen_preset or '
+           ~ 'leveldata_override: a fresh world there generates a FOREST, not caves.']
+          if (not s.is_master and s.worldgen_preset | length == 0 and s.leveldata_override | length == 0)
+          else [])
+         + (['Shard ' ~ s.name ~ ' server_port ' ~ s.server_port ~ ' is outside 10998-11018, '
+             ~ 'which Klei LAN discovery does not scan.']
+            if not (10998 <= (s.server_port | int) <= 11018) else [])
+         }}
+  loop: "{{ _dst_shards }}"
+  loop_control:
+    loop_var: s
+    label: "{{ s.name }}"
+  register: _dst_adv_loop
+
+- name: Gather the advisories into one list
+  ansible.builtin.set_fact:
+    _dst_advisories: >-
+      {{ (_dst_adv_loop.results | map(attribute='ansible_facts._dst_advisories') | flatten)
+         + (['Idle shutdown is on but dst_console_enabled is false: the player count falls back to '
+             ~ 'pause_when_empty, or cannot be read at all.']
+            if ((dst_idle_shutdown_minutes | int) > 0 and not (dst_console_enabled | bool)) else [])
+         + (['dst_control_allow is empty: only this host itself can start/stop the server over HTTP.']
+            if (dst_control_enabled | bool and dst_control_allow | length == 0) else []) }}

@@ -1,0 +1,197 @@
+---
+# ENTRYPOINT: remove a non-Steam app completely — its shortcut, its Proton prefix, and any
+# installer left behind.
+#
+# IRREVERSIBLE, AND DELIBERATELY AWKWARD. This deletes tens of gigabytes that no backup covers:
+# a Wine prefix holds local settings, graphics configuration and any mods, none of which are
+# synced anywhere. So it requires BOTH steamdeck_apply=true AND an explicit confirmation of the
+# app's name, on the grounds that a flag alone is too easy to pass by habit.
+#
+# It reports exactly what it will delete, with sizes, BEFORE doing anything — a dry run is the
+# default and the only way to see the blast radius.
+#
+# WHAT IT DOES NOT TOUCH: cloud saves. Most modern games keep progress server-side, and this
+# cannot know which do. The report says so rather than implying the data is recoverable.
+
+- name: Apply role defaults
+  ansible.builtin.include_tasks: setup_vars.yml
+
+- name: Read the current shortcuts
+  ansible.builtin.include_tasks: shortcuts_report.yml
+
+- name: Assert an app was named
+  ansible.builtin.assert:
+    that:
+      - steamdeck_remove_app | length > 0
+    fail_msg: "Set steamdeck_remove_app to the shortcut's exact AppName."
+    quiet: true
+
+- name: Find the shortcut
+  ansible.builtin.set_fact:
+    _sd_victim: >-
+      {{ (_sd_sc.shortcuts | default({}) | dict2items
+          | selectattr('value.AppName', 'defined')
+          | selectattr('value.AppName', 'equalto', steamdeck_remove_app)
+          | map(attribute='value') | list | first) | default({}, true) }}
+
+- name: Assert the shortcut exists
+  ansible.builtin.assert:
+    that:
+      - _sd_victim | length > 0
+    fail_msg: >-
+      No shortcut named '{{ steamdeck_remove_app }}'. Present:
+      {{ (_sd_sc.shortcuts | default({})).values() | map(attribute='AppName') | list | join(', ') }}
+    quiet: true
+
+- name: Work out what would be deleted
+  # The compat prefix is derived from the shortcut's OWN exe path rather than guessed from the
+  # app name: Proton prefixes are named by a numeric id that has no relationship to the title,
+  # and deleting the wrong one would destroy an unrelated game.
+  ansible.builtin.set_fact:
+    _sd_prefix: >-
+      {{ (_sd_victim.Exe | default('') | regex_search('(/home/[^/]+/\.steam/steam/steamapps/compatdata/[0-9]+)', '\1') | first) | default('', true) }}
+
+- name: Measure the footprint
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -o pipefail
+      {% if _sd_prefix %}
+      if [ -d '{{ _sd_prefix }}' ]; then
+        printf 'prefix=%s\n' "$(du -sh '{{ _sd_prefix }}' 2>/dev/null | cut -f1)"
+      else
+        printf 'prefix=absent\n'
+      fi
+      {% else %}
+      printf 'prefix=none\n'
+      {% endif %}
+      printf 'free_before=%s\n' "$(df -h /home | tail -1 | awk '{print $4}')"
+      # Installers matching the app name, cleaned up with the app.
+      find "$HOME/Downloads" -maxdepth 1 -iname '*{{ steamdeck_remove_app | regex_replace('\s+', '*') }}*' 2>/dev/null \
+        | while read -r f; do printf 'extra=%s (%s)\n' "$f" "$(du -h "$f" | cut -f1)"; done
+  register: _sd_footprint
+  changed_when: false
+
+- name: Report the blast radius
+  ansible.builtin.debug:
+    msg: "{{ _report.splitlines() }}"
+  vars:
+    # ONE vars block. Two `vars:` keys on a task is a duplicate mapping key: the second silently
+    # replaces the first, so _report would be undefined at render time.
+    _sd_confirmed: "{{ (steamdeck_apply | bool) and (steamdeck_remove_confirm == steamdeck_remove_app) }}"
+    _report: |
+      ===== {{ 'REMOVING' if _sd_confirmed else 'WOULD REMOVE' }}: {{ steamdeck_remove_app }} =====
+      shortcut : [{{ _sd_victim.appid | default('?') }}] {{ _sd_victim.Exe | default('') | truncate(72) }}
+      {% for line in _sd_footprint.stdout_lines %}
+      {{ line }}
+      {% endfor %}
+
+      This deletes the Proton prefix, which holds LOCAL settings, graphics configuration and any
+      mods. None of that is backed up anywhere. Progress kept on the publisher's servers is
+      unaffected; progress kept only on disk is not.
+      {% if not _sd_confirmed %}
+
+      To proceed, pass BOTH:
+        -e steamdeck_apply=true -e steamdeck_remove_confirm='{{ steamdeck_remove_app }}'
+      {% endif %}
+
+- name: Require an explicit confirmation
+  # The name must be typed back. A boolean flag is too easy to carry over from a previous
+  # command; naming the app is a deliberate act that cannot happen by accident.
+  ansible.builtin.assert:
+    that:
+      - steamdeck_remove_confirm == steamdeck_remove_app
+    fail_msg: >-
+      Refusing to delete. Pass -e steamdeck_remove_confirm='{{ steamdeck_remove_app }}'
+      to confirm (got '{{ steamdeck_remove_confirm | default('') }}').
+    quiet: true
+  when: steamdeck_apply | bool
+
+- name: Stage the shortcut helper for the read-back
+  ansible.builtin.copy:
+    src: steam_shortcuts.py
+    dest: "{{ steamdeck_helper_dir }}/steam_shortcuts.py"
+    mode: "0755"
+  when: steamdeck_apply | bool
+
+- name: Stop Steam before editing its shortcuts
+  ansible.builtin.command:
+    cmd: pkill -x steam
+  register: _sd_steam_stop
+  changed_when: (_sd_steam_stop.rc | int) == 0
+  failed_when: false
+  when: steamdeck_apply | bool
+
+- name: Wait for Steam to flush
+  ansible.builtin.wait_for:
+    timeout: "{{ steamdeck_steam_stop_wait | int }}"
+  when:
+    - steamdeck_apply | bool
+    - _sd_steam_stop.changed | default(false)
+
+- name: Remove the shortcut entry
+  # Built by rewriting the file WITHOUT this entry, rather than by index: indices shift whenever
+  # Steam rewrites the file, so deleting "number 1" could remove something else entirely.
+  ansible.builtin.script:
+    cmd: >-
+      steam_shortcuts_remove.py --path '{{ _sd_shortcuts_path }}'
+      --name '{{ steamdeck_remove_app }}' --apply
+    executable: /usr/bin/python3
+  register: _sd_removed
+  changed_when: (_sd_removed.stdout[_sd_removed.stdout.find('{') :] | from_json).removed | int > 0
+  when: steamdeck_apply | bool
+
+- name: Delete the Proton prefix
+  ansible.builtin.file:
+    path: "{{ _sd_prefix }}"
+    state: absent
+  when:
+    - steamdeck_apply | bool
+    - _sd_prefix | length > 0
+    - steamdeck_remove_data | bool
+
+- name: Delete leftover installers
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop: >-
+    {{ _sd_footprint.stdout_lines | select('match', '^extra=')
+       | map('regex_replace', '^extra=(.*) \(.*\)$', '\1') | list }}
+  when:
+    - steamdeck_apply | bool
+    - steamdeck_remove_data | bool
+
+- name: Confirm what was freed
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -o pipefail
+      printf 'free_after=%s\n' "$(df -h /home | tail -1 | awk '{print $4}')"
+      printf 'prefix_gone=%s\n' "$([ -d '{{ _sd_prefix }}' ] && echo no || echo yes)"
+      printf 'shortcut_gone=%s\n' "$(python3 - <<'EOF'
+      import json, subprocess, sys
+      out = subprocess.run([sys.executable, '{{ steamdeck_helper_dir }}/steam_shortcuts.py',
+                            '--path', '{{ _sd_shortcuts_path }}', '--mode', 'read'],
+                           capture_output=True, text=True).stdout
+      d = json.loads(out[out.find('{'):])
+      names = [e.get('AppName') for e in d.get('shortcuts', {}).values()]
+      print('yes' if '{{ steamdeck_remove_app }}' not in names else 'no')
+      EOF
+      )"
+  register: _sd_after_remove
+  changed_when: false
+  when: steamdeck_apply | bool
+
+- name: Assert it is actually gone
+  ansible.builtin.assert:
+    that:
+      - "'shortcut_gone=yes' in _sd_after_remove.stdout"
+      - "(not (steamdeck_remove_data | bool)) or ('prefix_gone=yes' in _sd_after_remove.stdout)"
+    fail_msg: "Removal incomplete: {{ _sd_after_remove.stdout_lines | join(' ') }}"
+    quiet: true
+  when: steamdeck_apply | bool
+
+- name: Report
+  ansible.builtin.debug:
+    msg: "{{ ['Removed ' ~ steamdeck_remove_app ~ '.'] + _sd_after_remove.stdout_lines }}"
+  when: steamdeck_apply | bool

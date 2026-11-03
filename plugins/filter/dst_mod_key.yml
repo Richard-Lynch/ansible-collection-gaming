@@ -1,0 +1,22 @@
+# Copyright: (c) 2026, Richard Lynch
+# GNU General Public License v3.0+ (see https://www.gnu.org/licenses/gpl-3.0.txt)
+---
+DOCUMENTATION:
+  name: dst_mod_key
+  short_description: Normalise a Steam Workshop mod id to Don't Starve Together's workshop key
+  author: Richard Lynch (@Richard-Lynch)
+  description:
+    - "Accepts digits, C(workshop-) followed by digits, or an integer, and returns C(workshop-<digits>). Anything else raises."
+  options:
+    _input:
+      description: "The Workshop id."
+      type: raw
+      required: true
+EXAMPLES: |
+  - name: Use dst_mod_key
+    ansible.builtin.debug:
+      msg: "{{ '378160973' | richard_lynch.gaming.dst_mod_key }}"
+RETURN:
+  _value:
+    description: "The key, C(workshop-<digits>)."
+    type: str

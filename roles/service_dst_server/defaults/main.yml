@@ -1,0 +1,293 @@
+---
+# AUTO-GENERATED defaults file — DO NOT EDIT.
+#
+# Source of truth: roles/service_dst_server/meta/argument_specs.py
+# Regenerate:      venv/bin/python tools/argspec/cli.py x generate service_dst_server
+#
+# Edits here are silently overwritten on the next generation. To change a value or its
+# documentation, change the OptionSpec in the source file above — descriptions there
+# are emitted as the comments in this file.
+# Entrypoint:      main
+
+# Which entrypoint to run. Defaults to the read-only probe, so a bare run
+# against an unfamiliar host changes nothing.
+dst_action__default: probe
+
+# deploy/update/backup/uninstall: actually make changes. Default false
+# renders every file in check mode and prints the diff, then stops.
+dst_apply__default: false
+
+# restore: the backup archive's FILE NAME (as listed by
+# dst_action=backup). Typing the name is both the selection and the
+# confirmation. The current cluster is moved aside, never deleted.
+dst_restore_confirm__default: ''
+
+# regenerate: must equal dst_cluster_dir_name. Moves every shard's world
+# aside (never deletes it) so the next start generates a fresh one from
+# the declared world settings.
+dst_regenerate_confirm__default: ''
+
+# purge: must equal dst_instance. DELETES the instance's whole data root —
+# install, steamcmd state, worlds, mods, backups — for a clean start.
+dst_purge_confirm__default: ''
+
+# uninstall: must equal dst_instance. Removes units, the control endpoint
+# and the image. World saves, backups and the installed server are KEPT.
+dst_uninstall_confirm__default: ''
+
+# Instance name. Prefixes every unit and container and names the data
+# directory, so two clusters can coexist on one host.
+dst_instance__default: dst
+
+# Root directory for the install, saves, mods and backups. Empty derives
+# $HOME/.local/share/iaac-dst/<instance> from the connecting user's facts.
+dst_root__default: ''
+
+# The cluster folder under DoNotStarveTogether/ (the game's own default
+# is Cluster_1). Renaming it points the server at a DIFFERENT, new world.
+dst_cluster_dir_name__default: Cluster_1
+
+# Interpreter for the control endpoint (absolute; systemd ExecStart).
+dst_python__default: /usr/bin/python3
+
+# podman binary (absolute; systemd ExecStart).
+dst_podman__default: /usr/bin/podman
+
+# Base image providing steamcmd. The server binaries are NOT baked in:
+# they live on a volume and are updated by steamcmd at start, so the
+# image changes only when this or the packages change.
+dst_base_image__default: docker.io/steamcmd/steamcmd:ubuntu-24
+
+# apt packages added to the base image. The 64-bit server links
+# libcurl-gnutls.so.4; on an Ubuntu 22.04 base the package is
+# libcurl3-gnutls instead (24.04 renamed it in the t64 transition).
+dst_image_packages__default:
+  - libcurl3t64-gnutls
+  - ca-certificates
+
+# Local image name. Tagged with a hash of its build inputs, so a changed
+# Containerfile is a new tag and an unchanged one is never rebuilt.
+dst_image_name__default: localhost/iaac-dst-server
+
+# steamcmd -beta branch (e.g. 'updatebeta'). Empty = the public release.
+# Clients must be on the SAME branch to join.
+dst_beta_branch__default: ''
+
+# Update the server through steamcmd every time it starts. Clients cannot
+# join a server on an older build, so after any game patch a server that
+# skipped this would be unjoinable. A failed update starts the installed
+# build with a warning rather than refusing to start.
+dst_update_on_start__default: true
+
+# Add steamcmd `validate` (re-hash every file). Slower; for repairing an install.
+dst_update_validate__default: false
+
+# steamcmd attempts per update. steamcmd routinely exits non-zero on the
+# run where it updates ITSELF, and succeeds on the next.
+dst_steamcmd_retries__default: 3
+
+# [NETWORK] cluster_description.
+dst_cluster_description__default: ''
+
+# [GAMEPLAY] game_mode. lavaarena/quagmire are Klei's EVENT modes and only
+# work while the event is live.
+dst_game_mode__default: survival
+
+# [GAMEPLAY] max_players.
+dst_max_players__default: 6
+
+# [GAMEPLAY] pvp.
+dst_pvp__default: false
+
+# [GAMEPLAY] pause_when_empty. Also the idle detector's FALLBACK signal:
+# when the console cannot be read, 'every shard paused' means empty.
+dst_pause_when_empty__default: true
+
+# [GAMEPLAY] vote_enabled (rollback/regenerate votes).
+dst_vote_enabled__default: true
+
+# [GAMEPLAY] vote_kick_enabled.
+dst_vote_kick_enabled__default: true
+
+# [NETWORK] cluster_intention (the browser's playstyle tag).
+dst_cluster_intention__default: cooperative
+
+# [NETWORK] lan_only_cluster: list the server on the LAN only, never in
+# Klei's public browser. Clients on another VLAN do not see LAN
+# broadcasts and must connect by address.
+dst_lan_only__default: false
+
+# [NETWORK] offline_cluster: no Klei authentication, so no cluster token is
+# needed — and no Klei items/skins, and LAN only. Workshop mods STILL work:
+# the server downloads them anonymously (an offline cluster downloads and
+# loads them).
+dst_offline__default: false
+
+# [NETWORK] tick_rate. Higher is smoother and costs CPU on every shard.
+dst_tick_rate__default: 15
+
+# [NETWORK] whitelist_slots: slots reserved for dst_whitelist players.
+dst_whitelist_slots__default: 0
+
+# [NETWORK] cluster_language.
+dst_cluster_language__default: en
+
+# [NETWORK] autosaver_enabled (save at each day's dawn).
+dst_autosaver_enabled__default: true
+
+# [MISC] console_enabled. REQUIRED for idle shutdown's primary player
+# count, which asks the master's console; with it off, idle detection
+# falls back to pause_when_empty or cannot tell.
+dst_console_enabled__default: true
+
+# [MISC] max_snapshots: in-game rollback points kept per shard.
+dst_max_snapshots__default: 6
+
+# [STEAM] steam_group_id. 0 = no group, and the [STEAM] group keys are omitted.
+dst_steam_group_id__default: 0
+
+# [STEAM] steam_group_only (needs dst_steam_group_id).
+dst_steam_group_only__default: false
+
+# [STEAM] steam_group_admins (needs dst_steam_group_id).
+dst_steam_group_admins__default: false
+
+# [SHARD] bind_ip / master_ip. Loopback, because every shard runs on this
+# host — the inter-shard link never needs to leave it.
+dst_shard_bind_ip__default: 127.0.0.1
+
+# [SHARD] master_port: the master's listener for its secondary shards.
+dst_shard_master_port__default: 10888
+
+# Extra cluster.ini keys as {SECTION: {key: value}}, merged OVER the
+# generated file. For a setting this role does not model.
+dst_cluster_ini_extra__default: {}
+
+# The Klei cluster token itself (minted at accounts.klei.com -> Games ->
+# DST Servers), for a caller that keeps it in Ansible Vault or any other
+# source. Wins over dst_cluster_token_item; empty = resolve that item.
+# One of the two is required unless dst_offline.
+dst_cluster_token__default: ''
+
+# The join password itself. Wins over dst_cluster_password_item; empty =
+# resolve that item, or no password when the item is empty too.
+dst_cluster_password__default: ''
+
+# 1Password vault holding the cluster token / password items. Required
+# whenever either item is resolved (an item declared and its value option
+# empty).
+dst_secret_vault__default: ''
+
+# 1Password item holding the Klei cluster token, resolved through
+# richard_lynch.common.onepassword_cached when dst_cluster_token is
+# empty. One of the two is required unless dst_offline.
+dst_cluster_token_item__default: ''
+
+# Field of dst_cluster_token_item holding the token.
+dst_cluster_token_field__default: credential
+
+# 1Password item holding the join password, resolved when
+# dst_cluster_password is empty. Both empty = no password.
+dst_cluster_password_item__default: ''
+
+# Field of dst_cluster_password_item holding the password.
+dst_cluster_password_field__default: password
+
+# Klei user ids (KU_...) written to adminlist.txt.
+dst_admins__default: []
+
+# Klei user ids written to whitelist.txt (see dst_whitelist_slots).
+dst_whitelist__default: []
+
+# Klei user ids written to blocklist.txt (banned).
+dst_blocklist__default: []
+
+# The cluster's shards. Default is the game's standard forest + caves
+# pair on Klei's conventional ports. Exactly one must be is_master.
+dst_shards__default:
+  - name: Master
+    is_master: true
+    server_port: 10999
+    master_server_port: 27016
+    authentication_port: 8766
+    worldgen_preset: SURVIVAL_TOGETHER
+  - name: Caves
+    server_port: 11000
+    master_server_port: 27017
+    authentication_port: 8767
+    worldgen_preset: DST_CAVE
+
+# Workshop mods, one entry per mod. Enabled mods are listed in
+# dedicated_server_mods_setup.lua (so the server downloads them) and
+# enabled with their config in every applicable shard's
+# modoverrides.lua. Clients download them on join.
+dst_mods__default: []
+
+# Workshop COLLECTION ids to download (ServerModCollectionSetup). A
+# collection only DOWNLOADS mods; each still needs a dst_mods entry to be
+# enabled, because enabling is per mod in modoverrides.lua.
+dst_mod_collections__default: []
+
+# Download/update Workshop mods (-only_update_server_mods) before the
+# shards start, so two shards never race to download the same mod.
+dst_mods_update_on_start__default: true
+
+# Start the cluster when the user manager starts (boot/login). Default
+# false: the server runs only on demand.
+dst_autostart__default: false
+
+# Enable systemd lingering for the user (needs become), so user units —
+# the server and its control endpoint — run with nobody logged in. Not
+# needed on a host that auto-logs-in; probe reports the current state.
+dst_linger__default: false
+
+# Seconds a shard gets to save and exit after c_shutdown(true) before
+# podman kills it. A big world on a slow disk needs the long end.
+dst_stop_timeout__default: 120
+
+# start: seconds to wait for every enabled shard to listen. The FIRST
+# start downloads the whole server (~1 GB), hence the generous default.
+dst_start_timeout__default: 900
+
+# Archive the cluster (stopped, so consistent) before every start. Cheap
+# insurance against an update or a mod corrupting the world.
+dst_backup_on_start__default: true
+
+# Archives kept; older ones are pruned after each new backup.
+dst_backup_keep__default: 10
+
+# Open the shards' UDP ports in firewalld (needs become). Leave false on
+# a host whose zone already admits them — probe reports which.
+dst_firewalld_manage__default: false
+
+# firewalld zone for dst_firewalld_manage. Empty = the default zone.
+dst_firewalld_zone__default: ''
+
+# Run the control endpoint: start/stop over HTTP for allowlisted clients,
+# and idle shutdown. False leaves the server controllable only by this role.
+dst_control_enabled__default: true
+
+# TCP port of the control endpoint.
+dst_control_port__default: 8091
+
+# Exact IPv4 addresses allowed to call the control endpoint, besides
+# 127.0.0.1. Empty (the default) means only the host itself can call it. The
+# endpoint listens on every interface and has no credential: this
+# allowlist IS the access control — the grant is start/stop, nothing else.
+dst_control_allow__default: []
+
+# Seconds between idle checks.
+dst_control_interval__default: 60
+
+# Stop the cluster after it has been EMPTY this long. 0 disables. An
+# unreadable player count never counts as empty: the endpoint reports
+# 'cannot tell' and leaves the server running.
+dst_idle_shutdown_minutes__default: 30
+
+# No idle shutdown within this long of a start, so pressing Start and
+# then taking a few minutes to join does not race the idle timer.
+dst_idle_startup_grace_minutes__default: 15
+
+# observe logs WOULD STOP and acts on nothing; enforce stops the cluster.
+# Stopping saves (c_shutdown(true)), so enforce is the default.
+dst_idle_shutdown_mode__default: enforce

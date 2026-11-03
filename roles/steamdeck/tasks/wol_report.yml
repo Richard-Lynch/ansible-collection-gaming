@@ -1,0 +1,167 @@
+---
+# ENTRYPOINT: can this device be woken over the network, and what is blocking it?
+#
+# WHY THE ANSWER IS NEVER "the NIC supports WoL". A USB Ethernet adapter can only wake the host
+# if EVERY link in the chain between it and the CPU is permitted to pass a wakeup event:
+#
+#   the adapter            -> the dock's internal hub -> the Deck's xHCI controller -> PCI
+#
+# Any one of those set to `disabled` silently swallows the magic packet. An adapter can be enabled
+# while the dock's hub or the Deck's own USB controller is disabled — and then a packet reaches
+# the NIC and stops there, and nothing reports an error.
+#
+# WAKE-ON-WIFI IS NOT AVAILABLE on the Deck at all: the ath11k driver gates WoWLAN behind a
+# hardware allowlist this adapter is not on. Wired-while-docked is the only candidate.
+#
+# steamdeck_apply=true enables the disabled links. NOTE they do NOT survive a reboot — see the
+# report — and a udev rule to persist them lives outside /home, which SteamOS replaces on major
+# updates. That impermanence is the honest reason to prefer "do not sleep while docked".
+
+- name: Apply role defaults
+  ansible.builtin.include_tasks: setup_vars.yml
+
+- name: Trace the USB wakeup chain
+  # Walks from the network device up through every parent that has a power/wakeup node, which is
+  # exactly the path a wakeup event has to travel.
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -o pipefail
+      for iface in $(ls /sys/class/net | grep -v '^lo$'); do
+        dev=$(readlink -f "/sys/class/net/$iface/device" 2>/dev/null) || continue
+        [ -n "$dev" ] || continue
+        carrier=$(cat "/sys/class/net/$iface/carrier" 2>/dev/null || echo 0)
+        printf 'iface=%s carrier=%s driver=%s\n' "$iface" "$carrier" \
+          "$(basename "$(readlink -f "/sys/class/net/$iface/device/driver" 2>/dev/null)" 2>/dev/null)"
+        d="$dev"
+        while [ -n "$d" ] && [ "$d" != "/" ]; do
+          if [ -f "$d/power/wakeup" ]; then
+            printf '  link=%s wakeup=%s product=%s id=%s\n' \
+              "$(basename "$d")" "$(cat "$d/power/wakeup")" \
+              "$( [ -f "$d/product" ] && cat "$d/product" || echo '-')" \
+              "$( [ -f "$d/idVendor" ] && echo "$(cat "$d/idVendor"):$(cat "$d/idProduct")" || echo '-')"
+          fi
+          d=$(dirname "$d")
+        done
+      done
+      # Is the persistence (wol_persist) actually in place? The chain resets on every boot and
+      # every device add, so "blocked now" means little without knowing what should re-arm it.
+      printf 'persist: rule=%s unit=%s/%s\n' \
+        "$( [ -f /etc/udev/rules.d/{{ steamdeck_wol_udev_rule }} ] && echo present || echo ABSENT)" \
+        "$(systemctl is-enabled {{ steamdeck_wol_unit }} 2>/dev/null || true)" \
+        "$(systemctl is-active {{ steamdeck_wol_unit }} 2>/dev/null || true)"
+      printf 'uptime_s=%s\n' "$(cut -d. -f1 /proc/uptime)"
+  register: _sd_wol
+  changed_when: false
+  check_mode: false # a read: under --check the report must still have something to parse
+
+- name: Report the wakeup chain
+  ansible.builtin.debug:
+    msg: "{{ _report.splitlines() }}"
+  vars:
+    # BLOCKED counts only the WIRED chain. A disabled WiFi link is the DESIRED state — WoWLAN
+    # cannot work on this hardware, so wol_disarm_wifi deliberately turns those off — and
+    # counting them made a correctly-configured device report "BLOCKED at 2 links", which is the
+    # precise opposite of the truth and would send someone to re-arm them.
+    #
+    # Scoped by splitting the trace on its `iface=` headers and discarding the ath11k block,
+    # matching on DRIVER rather than interface name or PCI address.
+    _wired_trace: >-
+      {{ _sd_wol.stdout.split('iface=') | reject('search', 'driver=ath11k') | join('') }}
+    _blocked: "{{ _wired_trace.splitlines() | select('search', 'wakeup=disabled') | list }}"
+    # The WIFI interface's own links, by DRIVER rather than by PCI address or interface name —
+    # `wlan0`/`wlp*` naming varies and the address is board-specific, while the driver is the
+    # thing that actually determines WoWLAN support. The trace prints one `iface=` header
+    # followed by that interface's parent links, so the wifi block is everything between the
+    # ath11k header and the next header.
+    _wifi_armed: >-
+      {{ (_sd_wol.stdout.split('iface=') | select('search', 'driver=ath11k') | join(''))
+         .splitlines() | select('search', 'wakeup=enabled')
+         | map('regex_replace', '^\s*link=(\S+).*$', '\1') | list }}
+    _report: |
+      ===== WAKE-ON-LAN CHAIN =====
+      {{ _sd_wol.stdout }}
+
+      {{ ('BLOCKED at ' ~ (_blocked | length) ~ ' link(s): a magic packet reaches the adapter and
+      stops there. Every link from the NIC up to the CPU must be enabled.')
+      if (_blocked | length) > 0
+      else 'Every link permits wakeup.' }}
+
+      Wake-on-WiFi is NOT available on this hardware regardless — ath11k gates WoWLAN behind a
+      device allowlist the Deck is not on. Wired-while-docked is the only candidate.
+
+      {{ ('WARNING: ' ~ (_wifi_armed | length) ~ ' WiFi link(s) have wakeup ENABLED: '
+          ~ (_wifi_armed | join(', ')) ~ '. This buys nothing — WoWLAN is unavailable here — while
+      leaving an armed wakeup source that link activity can trigger. Disarm it.')
+         if (_wifi_armed | length) > 0 else '' }}
+
+- name: Enable wakeup on the blocked links
+  # Writing 'enabled' to each power/wakeup that is currently disabled. Root is required, hence
+  # become — the value is a sysfs toggle, not a setting with a persistent config file.
+  #
+  # RESTRICTED TO THE WIRED CHAIN (driver r8152), never every interface. Walking them all also
+  # arms the internal USB controller that carries the Deck's built-in Steam Controller, and a
+  # gamepad signals activity constantly — the device then cannot stay suspended, resuming 2-4
+  # seconds after every idle suspend. It presents as a handheld switching itself on rather
+  # than as anything WoL-shaped.
+  #
+  # Matched on DRIVER because the interface name is generated from USB topology and changes with
+  # the dock's port. Undocked there is no r8152, so this correctly does nothing.
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -o pipefail
+      changed=0
+      for iface in $(ls /sys/class/net | grep -v '^lo$'); do
+        drv=$(basename "$(readlink -f "/sys/class/net/$iface/device/driver" 2>/dev/null)" 2>/dev/null)
+        [ "$drv" = "r8152" ] || continue
+        d=$(readlink -f "/sys/class/net/$iface/device" 2>/dev/null) || continue
+        while [ -n "$d" ] && [ "$d" != "/" ]; do
+          if [ -f "$d/power/wakeup" ] && [ "$(cat "$d/power/wakeup")" = "disabled" ]; then
+            echo enabled > "$d/power/wakeup" && changed=$((changed+1)) \
+              && echo "enabled $(basename "$d")"
+          fi
+          d=$(dirname "$d")
+        done
+      done
+      echo "CHANGED=$changed"
+  become: true
+  register: _sd_wol_set
+  changed_when: "'CHANGED=0' not in _sd_wol_set.stdout"
+  when: steamdeck_apply | bool
+
+- name: Re-read the chain
+  # The read-back that proves it: a sysfs write can be accepted and rejected by the driver, so
+  # the only evidence is reading the value afterwards.
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -o pipefail
+      for iface in $(ls /sys/class/net | grep -v '^lo$'); do
+        d=$(readlink -f "/sys/class/net/$iface/device" 2>/dev/null) || continue
+        while [ -n "$d" ] && [ "$d" != "/" ]; do
+          [ -f "$d/power/wakeup" ] && printf '%s=%s\n' "$(basename "$d")" "$(cat "$d/power/wakeup")"
+          d=$(dirname "$d")
+        done
+      done
+  register: _sd_wol_after
+  changed_when: false
+  when: steamdeck_apply | bool
+
+- name: Report the result
+  ansible.builtin.debug:
+    msg: "{{ _report.splitlines() }}"
+  vars:
+    _still: "{{ _sd_wol_after.stdout_lines | select('search', '=disabled') | list }}"
+    _report: |
+      ===== AFTER =====
+      {{ _sd_wol_after.stdout }}
+
+      {{ 'Every link now permits wakeup.' if (_still | length) == 0
+         else ('STILL BLOCKED: ' ~ (_still | join(', ')) ~ ' — the driver refused the write.') }}
+
+      NOT PERSISTENT. These are sysfs toggles and reset on every reboot. Persisting them needs a
+      udev rule in /etc, which SteamOS REPLACES on major updates — so this is a per-boot fix, not
+      a permanent one. If the goal is simply to reach the device on a schedule, disabling sleep
+      while docked is deterministic and survives updates; this does not.
+  when: steamdeck_apply | bool

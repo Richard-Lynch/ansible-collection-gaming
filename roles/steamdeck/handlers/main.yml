@@ -1,0 +1,15 @@
+---
+- name: Reload and re-trigger udev
+  # `udevadm control --reload` alone does NOT apply rules to devices already present — the
+  # trigger is what re-runs them against the existing tree. Without it the rule looks installed
+  # and changes nothing until the next replug, which is a silent no-op.
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -o pipefail
+      udevadm control --reload-rules
+      udevadm trigger --action=add --subsystem-match=usb --subsystem-match=pci
+      udevadm settle --timeout=15
+  become: true
+  changed_when: true
+  listen: reload udev

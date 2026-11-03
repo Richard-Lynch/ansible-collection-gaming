@@ -1,0 +1,109 @@
+---
+# ENTRYPOINT: close whatever Steam game is running, and prove it closed.
+#
+# WHY. A play that launches a game (klei_dst_client's token generator) cannot do it over another
+# one: Game Mode runs one game at a time. So "close the game someone left open" needs a play,
+# rather than a hand-run pkill.
+#
+# HOW A GAME'S PROCESSES ARE FOUND — BY ENVIRONMENT, NOT BY COMMAND LINE. Steam exports
+# SteamAppId=<id> into everything it launches for a game, and every descendant inherits it:
+# the reaper, pressure-vessel, Proton, wineserver and the game's own .exe. That is the one
+# property all of them share.
+#
+# WHY NOT THE COMMAND LINE: finding the game by its `reaper SteamLaunch AppId=` command line and
+# killing that tree kills the reaper, and a read-back of the reaper reports "closed" — while the
+# game keeps running, because the wine processes are no longer the reaper's children when the
+# kill reaches it. A
+# read-back must check the property that matters — "no process of this game exists" — not the
+# one that was convenient to signal.
+#
+# HOW IT IS CLOSED. SIGTERM to every process of the game, then, after
+# steamdeck_close_game_timeout, SIGKILL to whatever remains; then re-read by the same scan.
+#
+# Generate-don't-apply: without steamdeck_apply it reports the running game and stops. Closing it
+# loses unsaved progress, which is why it is never a side effect of another action.
+
+- name: Apply role defaults
+  ansible.builtin.include_tasks: setup_vars.yml
+
+- name: Define the scan
+  # Prints "<pid> <appid> <comm>" per process carrying SteamAppId in its environment. The
+  # scanning shell inherits no such variable, so it cannot match itself. Another user's processes
+  # are unreadable and skipped — a game runs as the deck user.
+  ansible.builtin.set_fact:
+    _sd_cg_scan: >-
+      for e in /proc/[0-9]*/environ; do
+      p=${e#/proc/}; p=${p%/environ};
+      a=$({ tr '\0' '\n' < "$e"; } 2>/dev/null | grep -m1 '^SteamAppId=[0-9]' | cut -d= -f2);
+      [ -n "$a" ] && [ "$a" != 0 ] && printf '%s %s %s\n' "$p" "$a" "$(cat /proc/$p/comm 2>/dev/null)";
+      done; true
+
+- name: Find every process belonging to a Steam game
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: "{{ _sd_cg_scan }}"
+  register: _sd_cg_before
+  changed_when: false
+
+- name: Parse them
+  # One [pid, appid, comm] per process.
+  ansible.builtin.set_fact:
+    _sd_cg_procs: "{{ _sd_cg_before.stdout | regex_findall('(?m)^(\\d+) (\\d+) (.*)$') }}"
+
+- name: HARD GATE — every line was parsed
+  # So "could not read it" can never present as "nothing is running".
+  ansible.builtin.assert:
+    that: [_sd_cg_procs | length == _sd_cg_before.stdout_lines | length]
+    fail_msg: "Could not parse: {{ _sd_cg_before.stdout_lines }}"
+    quiet: true
+
+- name: Report
+  ansible.builtin.debug:
+    msg: >-
+      {{ 'No Steam game is running.' if _sd_cg_procs | length == 0 else
+         'Running: AppId ' ~ (_sd_cg_procs | map(attribute='1') | unique | join(', AppId '))
+         ~ ', ' ~ (_sd_cg_procs | length) ~ ' process(es): '
+         ~ (_sd_cg_procs | map('last') | unique | join(', ')) ~ '. '
+         ~ ('CLOSING it.' if steamdeck_apply | bool else
+            'Set steamdeck_apply=true to close it (unsaved progress is lost).') }}
+
+- name: Close it
+  when: steamdeck_apply | bool and _sd_cg_procs | length > 0
+  block:
+    - name: SIGTERM every process of the game
+      ansible.builtin.shell:
+        executable: /bin/bash
+        cmd: 'set -o pipefail; { {{ _sd_cg_scan }}; } | while read -r pid _; do kill -TERM "$pid" 2>/dev/null; done; true'
+      changed_when: true
+
+    - name: Wait for them to go
+      ansible.builtin.shell:
+        executable: /bin/bash
+        cmd: "{{ _sd_cg_scan }}"
+      register: _sd_cg_wait
+      changed_when: false
+      until: _sd_cg_wait.stdout_lines | length == 0
+      retries: "{{ (steamdeck_close_game_timeout | int / 2) | int }}"
+      delay: 2
+
+  rescue:
+    - name: Still running — SIGKILL what remains
+      ansible.builtin.shell:
+        executable: /bin/bash
+        cmd: 'set -o pipefail; { {{ _sd_cg_scan }}; } | while read -r pid _; do kill -KILL "$pid" 2>/dev/null; done; sleep 2; true'
+      changed_when: true
+
+- name: Read back, by the same scan that found them
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: "{{ _sd_cg_scan }}"
+  register: _sd_cg_after
+  changed_when: false
+  when: steamdeck_apply | bool and _sd_cg_procs | length > 0
+
+- name: HARD GATE — no process of any Steam game remains
+  ansible.builtin.assert:
+    that: [_sd_cg_after.stdout_lines | length == 0]
+    fail_msg: "Still running after close: {{ _sd_cg_after.stdout_lines }}"
+    quiet: true
+  when: steamdeck_apply | bool and _sd_cg_procs | length > 0

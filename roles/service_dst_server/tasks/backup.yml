@@ -1,0 +1,45 @@
+---
+# ENTRYPOINT: list the cluster's backups; with dst_apply, take one now.
+#
+#   dst_action=backup
+#   dst_action=backup dst_apply=true
+#
+# Every start already archives the cluster first (dst_backup_on_start). A manual backup is
+# REFUSED while running: a world being written mid-archive is not a backup you can restore.
+
+- name: Deployed?
+  ansible.builtin.include_tasks: _assert_deployed.yml
+
+- name: Observe the cluster
+  ansible.builtin.include_tasks: _observe.yml
+
+- name: Take a backup
+  when: dst_apply | bool
+  block:
+    - name: HARD GATE — the cluster must be stopped
+      ansible.builtin.assert:
+        that:
+          - _dst_obs.state == 'stopped'
+        fail_msg: "The cluster is {{ _dst_obs.state }}. Stop it first (dst_action=stop) for a consistent archive."
+        quiet: true
+
+    - name: Archive the cluster
+      ansible.builtin.command:
+        argv: ["{{ _dst_dirs.bin }}/dst-backup.sh", manual]
+      register: _dst_backup_run
+      changed_when: true
+
+- name: List the backups
+  ansible.builtin.find:
+    paths: "{{ _dst_dirs.backups }}"
+    patterns: "*.tar.gz"
+  register: _dst_backups
+
+- name: Report
+  ansible.builtin.debug:
+    msg:
+      - "{{ _dst_backup_run.stdout_lines | default(['No backup taken (set dst_apply=true).']) }}"
+      - >-
+        {{ _dst_backups.files | length }} archive(s) in {{ _dst_dirs.backups }} (keeps {{ dst_backup_keep }}),
+        newest last — restore one with dst_action=restore dst_restore_confirm=<file name>:
+      - "{{ _dst_backups.files | map(attribute='path') | map('basename') | sort | list }}"

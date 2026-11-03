@@ -1,0 +1,64 @@
+---
+# ENTRYPOINT: Moonlight's streaming settings and paired hosts. Writes nothing.
+#
+# Separate from `probe` because it is the one people actually want repeatedly — "what is the
+# stream configured to do, and which host is it pointed at" — and it should not require reading
+# a whole device survey to answer.
+#
+# SECRETS ARE REDACTED BY THE PROBE SCRIPT, not here. The config contains the client's TLS
+# private key and the paired host's certificate; those never reach this play's output.
+
+- name: Apply role defaults
+  ansible.builtin.include_tasks: setup_vars.yml
+
+- name: Survey the device
+  ansible.builtin.script:
+    cmd: steamdeck_probe.py
+    executable: /usr/bin/python3
+  register: _sd_probe
+  changed_when: false
+  check_mode: false # a read: under --check the report must still have something to parse
+
+- name: Parse the survey
+  ansible.builtin.set_fact:
+    _sd: "{{ _sd_probe.stdout[_sd_probe.stdout.find('{') :] | from_json }}"
+
+- name: Assert Moonlight is installed
+  ansible.builtin.assert:
+    that:
+      - _sd.moonlight.installed | bool
+    fail_msg: >-
+      Moonlight is not installed (no config at the expected flatpak path). Install
+      com.moonlight_stream.Moonlight first.
+    quiet: true
+
+- name: Report the streaming configuration
+  ansible.builtin.debug:
+    msg: "{{ _report.splitlines() }}"
+  vars:
+    _s: "{{ _sd.moonlight.settings }}"
+    # int-cast here is NOT enough on its own: a var defined with {{ }} is re-templated to a
+    # STRING when another var references it, so the comparison below must cast again.
+    _panel: "{{ _sd.hardware.panel_hz | default(0) | int }}"
+    _report: |
+      ===== STREAM SETTINGS =====
+      resolution : {{ _s.width | default('?') }}x{{ _s.height | default('?') }}
+      fps        : {{ _s.fps | default('?') }}{{ '   <- panel is ' ~ _panel ~ 'Hz' if ((_panel | int) > 0 and (_s.fps | default(0) | int) < (_panel | int)) else '' }}
+      bitrate    : {{ _s.bitrate | default('?') }} Kbps
+      hdr        : {{ _s.hdr | default('?') }}
+      vsync/pacing: {{ _s.framepacing | default('?') }}
+      audio      : {{ 'host speakers too' if (_s.hostaudio | default('false')) == 'true' else 'client only' }}
+      multi-pad  : {{ _s.multicontroller | default('?') }}
+
+      ===== PAIRED HOSTS ({{ _sd.moonlight.hosts | length }}) =====
+      {% for idx, h in _sd.moonlight.hosts.items() %}
+      [{{ idx }}] {{ h.hostname | default('(unnamed)') }}
+          local  : {{ h.localaddress | default('(none)') }}
+          remote : {{ h.remoteaddress | default('(none)') }}
+          mac    : {{ 'recorded (wake-on-LAN possible)' if h.mac is defined else 'none' }}
+          apps   : {{ h['apps\\size'] | default('?') }}
+          cert   : {{ 'paired' if h.srvcert is defined else 'NOT PAIRED' }}
+      {% endfor %}
+
+      Pairing state and certificates are deliberately NOT managed by this role: pairing is a
+      per-device trust decision, and the config holds a private key that must not enter the repo.

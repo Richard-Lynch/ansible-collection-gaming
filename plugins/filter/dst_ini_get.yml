@@ -1,0 +1,30 @@
+# Copyright: (c) 2026, Richard Lynch
+# GNU General Public License v3.0+ (see https://www.gnu.org/licenses/gpl-3.0.txt)
+---
+DOCUMENTATION:
+  name: dst_ini_get
+  short_description: Read one value from INI text
+  author: Richard Lynch (@Richard-Lynch)
+  description:
+    - "Returns the value of C(key) in C(section), or null when either is absent. Comments and blank lines are ignored."
+  options:
+    _input:
+      description: "The INI file text."
+      type: str
+      required: true
+    section:
+      description: "The section name."
+      type: str
+      required: true
+    key:
+      description: "The key name."
+      type: str
+      required: true
+EXAMPLES: |
+  - name: Use dst_ini_get
+    ansible.builtin.debug:
+      msg: "{{ server_ini_text | richard_lynch.gaming.dst_ini_get('SHARD', 'id') }}"
+RETURN:
+  _value:
+    description: "The value as text, or null."
+    type: raw

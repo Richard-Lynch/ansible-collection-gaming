@@ -1,0 +1,158 @@
+---
+# Converges the REAL role on localhost: the fixture zip (prepare.yml) as the "downloaded"
+# release, a fixture home as the device. Restart and become are off — there is no Decky or sudo
+# here — and the top directory's "root" owner is the test user.
+- name: Converge
+  hosts: localhost
+  gather_facts: true
+  vars:
+    _root: /tmp/molecule-decky-plugin
+    _common:
+      decky_plugin_archive: "{{ _root }}/fixture-v1.0.0.zip"
+      decky_plugin_version: v1.0.0
+      decky_plugin_directory: fixture
+      decky_plugin_name: Fixture
+      decky_plugin_home: "{{ _root }}/home"
+      decky_plugin_staging_dir: "{{ _root }}/staging"
+      decky_plugin_config_check: "fixturecfg:load"
+      decky_plugin_become: false
+      decky_plugin_restart: false
+      decky_plugin_root_owner: "{{ ansible_user_id }}"
+  tasks:
+    - name: Run the helpers' own test suite
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/../../files/test_decky_plugin.py"]
+      changed_when: false
+
+    - name: Digest of the fixture release
+      ansible.builtin.stat:
+        path: "{{ _root }}/fixture-v1.0.0.zip"
+        checksum_algorithm: sha256
+      register: _zip
+
+    - name: The device tree before the refusals (absent on the first run, installed on the second)
+      ansible.builtin.find:
+        paths: "{{ _root }}/home/homebrew"
+        recurse: true
+        file_type: any
+        get_checksum: true
+      register: _before
+
+    # ------------------------------------------------------------------ refusals (write nothing)
+    - name: A WRONG sha256 pin must be refused
+      block:
+        - name: Install with a pin that is not the archive's
+          ansible.builtin.include_role:
+            name: decky_plugin
+          vars:
+            decky_plugin_archive: "{{ _common.decky_plugin_archive }}"
+            decky_plugin_version: "{{ _common.decky_plugin_version }}"
+            decky_plugin_directory: "{{ _common.decky_plugin_directory }}"
+            decky_plugin_name: "{{ _common.decky_plugin_name }}"
+            decky_plugin_home: "{{ _common.decky_plugin_home }}"
+            decky_plugin_staging_dir: "{{ _root }}/staging-refused"
+            decky_plugin_become: false
+            decky_plugin_restart: false
+            decky_plugin_root_owner: "{{ ansible_user_id }}"
+            decky_plugin_apply: true
+            decky_plugin_sha256: "{{ '0' * 64 }}"
+        - name: Not reached when the pin is enforced
+          ansible.builtin.set_fact:
+            _wrong_pin_passed: true
+      rescue:
+        - name: The pin gate fired
+          ansible.builtin.set_fact:
+            _wrong_pin_refused: true
+
+    - name: A config the plugin's own validator rejects must be refused before the device
+      block:
+        - name: Install with a config missing the wake section and a string timeout
+          ansible.builtin.include_role:
+            name: decky_plugin
+          vars:
+            decky_plugin_archive: "{{ _common.decky_plugin_archive }}"
+            decky_plugin_version: "{{ _common.decky_plugin_version }}"
+            decky_plugin_directory: "{{ _common.decky_plugin_directory }}"
+            decky_plugin_name: "{{ _common.decky_plugin_name }}"
+            decky_plugin_home: "{{ _common.decky_plugin_home }}"
+            decky_plugin_staging_dir: "{{ _root }}/staging-refused"
+            decky_plugin_config_check: "{{ _common.decky_plugin_config_check }}"
+            decky_plugin_become: false
+            decky_plugin_restart: false
+            decky_plugin_root_owner: "{{ ansible_user_id }}"
+            decky_plugin_apply: true
+            decky_plugin_sha256: "{{ _zip.stat.checksum }}"
+            decky_plugin_config: { dst: { timeout_s: "30" } }
+        - name: Not reached when the validator gate works
+          ansible.builtin.set_fact:
+            _bad_config_passed: true
+      rescue:
+        - name: The config gate fired
+          ansible.builtin.set_fact:
+            _bad_config_refused: true
+
+    - name: The device tree after the refusals
+      ansible.builtin.find:
+        paths: "{{ _root }}/home/homebrew"
+        recurse: true
+        file_type: any
+        get_checksum: true
+      register: _after
+
+    - name: Both refusals fired, and neither wrote to the device
+      ansible.builtin.assert:
+        that:
+          - _wrong_pin_refused | default(false)
+          - not (_wrong_pin_passed | default(false))
+          - _bad_config_refused | default(false)
+          - not (_bad_config_passed | default(false))
+          - _after.files | map(attribute='path') | sort == _before.files | map(attribute='path') | sort
+          - _after.files | map(attribute='checksum', default='') | sort == _before.files | map(attribute='checksum', default='') | sort
+        quiet: true
+
+    # ------------------------------------------------------------------------------- the install
+    - name: Install the fixture plugin
+      ansible.builtin.include_role:
+        name: decky_plugin
+      vars:
+        decky_plugin_archive: "{{ _common.decky_plugin_archive }}"
+        decky_plugin_version: "{{ _common.decky_plugin_version }}"
+        decky_plugin_directory: "{{ _common.decky_plugin_directory }}"
+        decky_plugin_name: "{{ _common.decky_plugin_name }}"
+        decky_plugin_home: "{{ _common.decky_plugin_home }}"
+        decky_plugin_staging_dir: "{{ _common.decky_plugin_staging_dir }}"
+        decky_plugin_config_check: "{{ _common.decky_plugin_config_check }}"
+        decky_plugin_become: false
+        decky_plugin_restart: false
+        decky_plugin_root_owner: "{{ ansible_user_id }}"
+        decky_plugin_apply: true
+        decky_plugin_sha256: "{{ _zip.stat.checksum }}"
+        decky_plugin_config:
+          dst:
+            { base_url: "http://dst.example:8091", timeout_s: "{{ 30 | int }}" }
+          wake: { mac: "02:00:5e:00:53:01" }
+
+    # ------------------------------------------------------------------- the read-only verify
+    - name: Probe it (no Decky here, so it must not be "loaded")
+      ansible.builtin.include_role:
+        name: decky_plugin
+        tasks_from: verify
+        defaults_from: verify
+      vars:
+        decky_plugin_directory: "{{ _common.decky_plugin_directory }}"
+        decky_plugin_name: "{{ _common.decky_plugin_name }}"
+        decky_plugin_home: "{{ _common.decky_plugin_home }}"
+        decky_plugin_config_check: "{{ _common.decky_plugin_config_check }}"
+        decky_plugin_service: iaac-molecule-no-such-unit
+        decky_plugin_ready_pattern: "never written"
+
+    - name: The probe was honest
+      ansible.builtin.assert:
+        that:
+          - _dp_probe.verdict in ['failed', 'cannot tell']
+          - _dp_probe.installed
+          - _dp_probe.installed_name == 'Fixture'
+          - _dp_probe.installed_version == '1.0.0'
+          - _dp_probe.config.verdict == 'parsed'
+        fail_msg: "{{ _dp_probe | to_json }}"
+        quiet: true

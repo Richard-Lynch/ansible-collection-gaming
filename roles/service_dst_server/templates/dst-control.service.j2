@@ -1,0 +1,18 @@
+# {{ ansible_managed }}
+# DST {{ dst_instance }}: the on-demand control endpoint (start/stop over HTTP for allowlisted
+# clients, and idle shutdown). See roles/service_dst_server/files/dst_control.py.
+#
+# NOT PartOf the cluster target: it must keep running while the server is stopped — starting a
+# stopped server is its main job.
+[Unit]
+Description=DST {{ dst_instance }}: control endpoint (:{{ dst_control_port }})
+After=default.target
+
+[Service]
+Type=simple
+ExecStart={{ dst_python }} {{ _dst_dirs.bin }}/dst_control.py --config {{ _dst_dirs.state }}/control.json
+Restart=always
+RestartSec=10s
+
+[Install]
+WantedBy=default.target

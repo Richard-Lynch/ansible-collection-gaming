@@ -1,0 +1,13 @@
+# Check-tier scenario: the role talks to Steam's Web API with the account holder's key, which CI
+# does not have. What CAN be proven offline is the script that does all the work — run here end to end
+# against a local fake of the API (plan, apply + read-back, the accepted-but-dropped FAILURE,
+# idempotence, refusal without a key). See files/test_steam_workshop.py.
+---
+- name: Converge
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Run the reconciler's suite against the fake Steam API
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/../../files/test_steam_workshop.py"]
+      changed_when: false

@@ -1,0 +1,83 @@
+---
+# DEVICE, read-only: loaded / failed / cannot tell, from the running system (see
+# files/decky_plugin_probe.py for where each piece of evidence comes from).
+#
+# Inputs (include vars): _dp_wait (poll until loaded, after a restart), _dp_require (fail unless
+# loaded), _dp_require_config (fail unless the plugin's validator accepts the config).
+
+- name: Derive the device home
+  ansible.builtin.set_fact:
+    _dp_home: "{{ decky_plugin_home if decky_plugin_home | length > 0 else ansible_env.HOME }}"
+
+- name: Probe the plugin
+  ansible.builtin.script:
+    cmd: >-
+      decky_plugin_probe.py probe
+      --home {{ _dp_home | quote }}
+      --directory {{ decky_plugin_directory | quote }}
+      --name {{ decky_plugin_name | quote }}
+      --service {{ decky_plugin_service | quote }}
+      --ready-pattern {{ decky_plugin_ready_pattern | quote }}
+      --config-file {{ decky_plugin_config_file | quote }}
+      --config-check {{ decky_plugin_config_check | quote }}
+    executable: "{{ decky_plugin_python }}"
+  register: _dp_probe_run
+  changed_when: false
+  become: false
+  # After a restart Decky needs a few seconds to start the backend; poll until it reports loaded
+  # (or the timeout), then the assert below decides. One attempt otherwise.
+  until: >-
+    not (_dp_wait | default(false) | bool)
+    or (_dp_probe_run.rc == 0
+        and (_dp_probe_run.stdout[_dp_probe_run.stdout.find('{') :] | from_json).verdict == 'loaded')
+  retries: "{{ ((decky_plugin_verify_timeout | default(90) | int) / 5) | round(0, 'ceil') | int if (_dp_wait | default(false) | bool) else 0 }}"
+  delay: 5
+  failed_when: _dp_probe_run.rc != 0
+
+- name: Parse the probe
+  ansible.builtin.set_fact:
+    _dp_probe: "{{ _dp_probe_run.stdout[_dp_probe_run.stdout.find('{') :] | from_json }}"
+
+- name: Report
+  ansible.builtin.debug:
+    msg:
+      - "{{ decky_plugin_name }} on {{ inventory_hostname }}: {{ _dp_probe.verdict | upper }} — {{ _dp_probe.reasons | join('; ') }}"
+      - >-
+        Decky {{ _dp_probe.decky_version | default('?', true) }} ({{ decky_plugin_service }}):
+        {{ _dp_probe.decky_state | default('UNKNOWN', true) }}{{ (', started @' ~ _dp_probe.decky_started) if _dp_probe.decky_started else '' }}
+      - >-
+        installed: {{ (_dp_probe.installed_name ~ ' v' ~ (_dp_probe.installed_version | default('?', true))) if _dp_probe.installed else 'NO' }}
+        {{ '(DISABLED in Decky)' if _dp_probe.disabled else '' }}
+      - "backend processes: {{ _dp_probe.processes if _dp_probe.processes is not none else 'cannot read the process table' }}"
+      - >-
+        newest backend log: {{ _dp_probe.log | default('none', true) }}
+        (belongs to the running backend: {{ _dp_probe.log_is_current }}; ready line: {{ _dp_probe.log_ready_line }};
+        error lines: {{ _dp_probe.log_errors | length }})
+      - "error lines: {{ _dp_probe.log_errors if _dp_probe.log_errors else 'none' }}"
+      - "Decky journal since start: {{ _dp_probe.journal if _dp_probe.journal else 'nothing about this plugin (this journal is often rotated hard — absence is not evidence)' }}"
+      - >-
+        config: {{ (_dp_probe.config.verdict | upper ~ ' — ' ~ _dp_probe.config.detail ~ ' (' ~ _dp_probe.config.path
+        ~ ', mode ' ~ (_dp_probe.config.mode | default('?')) ~ ', owner ' ~ (_dp_probe.config.owner | default('?')) ~ ')')
+        if _dp_probe.config else 'not checked (plugin not installed)' }}
+      - "Not observable from here: the frontend panel itself (it renders inside Steam's CEF). Open the Quick Access Menu to see it."
+
+- name: HARD GATE — the backend must be loaded
+  ansible.builtin.assert:
+    that: [_dp_probe.verdict == 'loaded']
+    fail_msg: >-
+      {{ decky_plugin_name }} is {{ _dp_probe.verdict | upper }} on {{ inventory_hostname }}:
+      {{ _dp_probe.reasons | join('; ') }}. Errors: {{ _dp_probe.log_errors + _dp_probe.journal }}
+    quiet: true
+  when: _dp_require | default(false) | bool
+
+- name: HARD GATE — the plugin must accept its config
+  ansible.builtin.assert:
+    that:
+      [_dp_probe.config is not none and _dp_probe.config.verdict == 'parsed']
+    fail_msg: >-
+      {{ decky_plugin_name }}'s config on {{ inventory_hostname }} is
+      {{ _dp_probe.config.verdict | default('unchecked') | upper }}: {{ _dp_probe.config.detail | default('') }}
+    quiet: true
+  when:
+    - _dp_require | default(false) | bool
+    - _dp_require_config | default(false) | bool

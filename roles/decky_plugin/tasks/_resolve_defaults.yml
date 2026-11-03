@@ -1,0 +1,73 @@
+---
+# AUTO-GENERATED defaults resolver — DO NOT EDIT.
+#
+# Source of truth: roles/decky_plugin/meta/argument_specs.py
+# Regenerate:      venv/bin/python tools/argspec/cli.py x generate decky_plugin
+#
+# Edits here are silently overwritten on the next generation. To change a value or its
+# documentation, change the OptionSpec in the source file above — descriptions there
+# are emitted as the comments in this file.
+
+# Binds every declared option to its generated default, so a caller-supplied value
+# wins and an unsupplied one falls back rather than evaluating Undefined.
+#
+# Include this FIRST from every entrypoint:
+#   - ansible.builtin.include_tasks: _resolve_defaults.yml
+#
+# Role-specific setup logic belongs in tasks/setup_vars.yml, NOT here — this file is
+# overwritten on every generation.
+#
+# TWO BRANCHES, because `set_fact` persists for the whole play. A role invoked twice in
+# one play would otherwise see its OWN leftover facts on the second call, so a later
+# caller that omitted an option silently inherited the earlier caller's value instead of
+# the declared default. On a repeat call this ignores the role's own facts and rebinds
+# the defaults; an include-level `vars:` shadows the fact, so a value the caller DID
+# supply this time still wins. Roles called once per play only ever run the first branch.
+
+- name: Resolve declared options over their generated defaults
+  ansible.builtin.set_fact:
+    decky_plugin_apply: "{{ decky_plugin_apply | default(decky_plugin_apply__default) if decky_plugin_apply__default is defined else decky_plugin_apply | default(omit) }}"
+    decky_plugin_repo: "{{ decky_plugin_repo | default(decky_plugin_repo__default) if decky_plugin_repo__default is defined else decky_plugin_repo | default(omit) }}"
+    decky_plugin_asset: "{{ decky_plugin_asset | default(decky_plugin_asset__default) if decky_plugin_asset__default is defined else decky_plugin_asset | default(omit) }}"
+    decky_plugin_archive: "{{ decky_plugin_archive | default(decky_plugin_archive__default) if decky_plugin_archive__default is defined else decky_plugin_archive | default(omit) }}"
+    decky_plugin_staging_dir: "{{ decky_plugin_staging_dir | default(decky_plugin_staging_dir__default) if decky_plugin_staging_dir__default is defined else decky_plugin_staging_dir | default(omit) }}"
+    decky_plugin_config: "{{ decky_plugin_config | default(decky_plugin_config__default) if decky_plugin_config__default is defined else decky_plugin_config | default(omit) }}"
+    decky_plugin_config_mode: "{{ decky_plugin_config_mode | default(decky_plugin_config_mode__default) if decky_plugin_config_mode__default is defined else decky_plugin_config_mode | default(omit) }}"
+    decky_plugin_root_owner: "{{ decky_plugin_root_owner | default(decky_plugin_root_owner__default) if decky_plugin_root_owner__default is defined else decky_plugin_root_owner | default(omit) }}"
+    decky_plugin_become: "{{ decky_plugin_become | default(decky_plugin_become__default) if decky_plugin_become__default is defined else decky_plugin_become | default(omit) }}"
+    decky_plugin_restart: "{{ decky_plugin_restart | default(decky_plugin_restart__default) if decky_plugin_restart__default is defined else decky_plugin_restart | default(omit) }}"
+    decky_plugin_verify_timeout: "{{ decky_plugin_verify_timeout | default(decky_plugin_verify_timeout__default) if decky_plugin_verify_timeout__default is defined else decky_plugin_verify_timeout | default(omit) }}"
+    decky_plugin_home: "{{ decky_plugin_home | default(decky_plugin_home__default) if decky_plugin_home__default is defined else decky_plugin_home | default(omit) }}"
+    decky_plugin_service: "{{ decky_plugin_service | default(decky_plugin_service__default) if decky_plugin_service__default is defined else decky_plugin_service | default(omit) }}"
+    decky_plugin_python: "{{ decky_plugin_python | default(decky_plugin_python__default) if decky_plugin_python__default is defined else decky_plugin_python | default(omit) }}"
+    decky_plugin_ready_pattern: "{{ decky_plugin_ready_pattern | default(decky_plugin_ready_pattern__default) if decky_plugin_ready_pattern__default is defined else decky_plugin_ready_pattern | default(omit) }}"
+    decky_plugin_config_file: "{{ decky_plugin_config_file | default(decky_plugin_config_file__default) if decky_plugin_config_file__default is defined else decky_plugin_config_file | default(omit) }}"
+    decky_plugin_config_check: "{{ decky_plugin_config_check | default(decky_plugin_config_check__default) if decky_plugin_config_check__default is defined else decky_plugin_config_check | default(omit) }}"
+    decky_plugin_require_loaded: "{{ decky_plugin_require_loaded | default(decky_plugin_require_loaded__default) if decky_plugin_require_loaded__default is defined else decky_plugin_require_loaded | default(omit) }}"
+  when: not (_decky_plugin__argspec_resolved | default(false))
+
+- name: Rebind the defaults on a repeat call, ignoring this role's own leftover facts
+  ansible.builtin.set_fact:
+    decky_plugin_apply: "{{ decky_plugin_apply__default if decky_plugin_apply__default is defined else decky_plugin_apply | default(omit) }}"
+    decky_plugin_repo: "{{ decky_plugin_repo__default if decky_plugin_repo__default is defined else decky_plugin_repo | default(omit) }}"
+    decky_plugin_asset: "{{ decky_plugin_asset__default if decky_plugin_asset__default is defined else decky_plugin_asset | default(omit) }}"
+    decky_plugin_archive: "{{ decky_plugin_archive__default if decky_plugin_archive__default is defined else decky_plugin_archive | default(omit) }}"
+    decky_plugin_staging_dir: "{{ decky_plugin_staging_dir__default if decky_plugin_staging_dir__default is defined else decky_plugin_staging_dir | default(omit) }}"
+    decky_plugin_config: "{{ decky_plugin_config__default if decky_plugin_config__default is defined else decky_plugin_config | default(omit) }}"
+    decky_plugin_config_mode: "{{ decky_plugin_config_mode__default if decky_plugin_config_mode__default is defined else decky_plugin_config_mode | default(omit) }}"
+    decky_plugin_root_owner: "{{ decky_plugin_root_owner__default if decky_plugin_root_owner__default is defined else decky_plugin_root_owner | default(omit) }}"
+    decky_plugin_become: "{{ decky_plugin_become__default if decky_plugin_become__default is defined else decky_plugin_become | default(omit) }}"
+    decky_plugin_restart: "{{ decky_plugin_restart__default if decky_plugin_restart__default is defined else decky_plugin_restart | default(omit) }}"
+    decky_plugin_verify_timeout: "{{ decky_plugin_verify_timeout__default if decky_plugin_verify_timeout__default is defined else decky_plugin_verify_timeout | default(omit) }}"
+    decky_plugin_home: "{{ decky_plugin_home__default if decky_plugin_home__default is defined else decky_plugin_home | default(omit) }}"
+    decky_plugin_service: "{{ decky_plugin_service__default if decky_plugin_service__default is defined else decky_plugin_service | default(omit) }}"
+    decky_plugin_python: "{{ decky_plugin_python__default if decky_plugin_python__default is defined else decky_plugin_python | default(omit) }}"
+    decky_plugin_ready_pattern: "{{ decky_plugin_ready_pattern__default if decky_plugin_ready_pattern__default is defined else decky_plugin_ready_pattern | default(omit) }}"
+    decky_plugin_config_file: "{{ decky_plugin_config_file__default if decky_plugin_config_file__default is defined else decky_plugin_config_file | default(omit) }}"
+    decky_plugin_config_check: "{{ decky_plugin_config_check__default if decky_plugin_config_check__default is defined else decky_plugin_config_check | default(omit) }}"
+    decky_plugin_require_loaded: "{{ decky_plugin_require_loaded__default if decky_plugin_require_loaded__default is defined else decky_plugin_require_loaded | default(omit) }}"
+  when: _decky_plugin__argspec_resolved | default(false)
+
+- name: Record that this role has resolved its options in this play
+  ansible.builtin.set_fact:
+    _decky_plugin__argspec_resolved: true

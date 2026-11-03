@@ -1,0 +1,143 @@
+---
+# ENTRYPOINT: disarm wakeup on the Deck's INTERNAL USB root hubs. Reports by default; writes
+# with steamdeck_apply=true.
+#
+# WHY THIS EXISTS. A udev rule that matches the Linux Foundation vendor id (1d6b) to arm "root
+# hubs" for Wake-on-LAN arms every one of them, because that id is what the KERNEL presents every
+# virtual root hub as — all four — including usb3/usb4 on the
+# internal controller (0000:04:00.4), which carries the Deck's own built-in Steam Controller.
+#
+# A gamepad signals activity constantly, so the device can no longer stay asleep: it suspends
+# on Steam's idle timer and resumes 2-4 seconds later, every time. From the outside that is
+# indistinguishable from a handheld turning itself on.
+#
+# FIXING THE RULE IS NOT ENOUGH. A corrected rule governs every FUTURE device add,
+# but a `power/wakeup` value already set in sysfs survives until the device is re-added or the
+# machine reboots — so the running session stays armed with nothing else in the role able to
+# clear it. Same shape as wol_disarm_wifi, different target, hence its own action rather than
+# overloading that one: the WiFi adapter is disarmed because WoWLAN cannot work at all, while
+# these hubs are disarmed because they wake the machine far too well.
+#
+# SCOPED BY CONTROLLER, not by hub name. The dock's bus and the internal bus are distinguished by
+# which xHCI controller they hang off, which is a stable property of the board:
+#
+#   0000:04:00.3 -> usb1 / usb2   the DOCK's bus. Left alone — this is the WoL path.
+#   0000:04:00.4 -> usb3 / usb4   INTERNAL. The Steam Controller. Disarmed here.
+#
+# wakeup_active_count tells them apart before anything is written: an armed internal hub
+# accumulates wakeups, while the dock bus only wakes the device on a magic packet.
+
+- name: Apply role defaults
+  ansible.builtin.include_tasks: setup_vars.yml
+
+- name: Find which root hubs belong to the internal controller
+  # Resolves each root hub to its PARENT PCI controller and reports both, rather than assuming
+  # usb3/usb4 are the internal pair — the numbering is enumeration order and can differ on
+  # another unit or after a firmware change. What identifies the dock's bus is that the r8152
+  # ethernet appears beneath it, so that is what is detected.
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -o pipefail
+      # Which controller does the dock hang off, if it is attached at all?
+      dock_ctrl=""
+      for iface in $(ls /sys/class/net | grep -v '^lo$'); do
+        drv=$(basename "$(readlink -f "/sys/class/net/$iface/device/driver" 2>/dev/null)" 2>/dev/null)
+        if [ "$drv" = "r8152" ]; then
+          # .../0000:04:00.3/usb2/2-1/2-1.1 -> the PCI controller is the 0000:* component.
+          dock_ctrl=$(readlink -f "/sys/class/net/$iface/device" | grep -oE '0000:[0-9a-f]{2}:[0-9a-f]{2}\.[0-9]' | tail -1)
+        fi
+      done
+      printf 'dock_controller=%s\n' "${dock_ctrl:-none-attached}"
+      for u in /sys/bus/usb/devices/usb*; do
+        [ -e "$u/power/wakeup" ] || continue
+        ctrl=$(readlink -f "$u" | grep -oE '0000:[0-9a-f]{2}:[0-9a-f]{2}\.[0-9]' | tail -1)
+        printf 'hub=%s controller=%s wakeup=%s active=%s\n' \
+          "$(basename "$u")" "$ctrl" "$(cat "$u/power/wakeup")" \
+          "$(cat "$u/power/wakeup_active_count" 2>/dev/null)"
+      done
+  register: _sd_hubs
+  changed_when: false
+
+- name: Report the plan
+  ansible.builtin.debug:
+    msg: "{{ _report.splitlines() }}"
+  vars:
+    _dock_ctrl: >-
+      {{ (_sd_hubs.stdout_lines | select('search', '^dock_controller=') | first | default('dock_controller=none-attached'))
+         | regex_replace('^dock_controller=', '') }}
+    _hubs: "{{ _sd_hubs.stdout_lines | select('search', '^hub=') | list }}"
+    # Everything NOT on the dock's controller. When the dock is absent the controller reads
+    # 'none-attached', which matches no hub line — so every armed hub is a candidate, which is
+    # the correct conservative answer for an undocked device.
+    _internal: >-
+      {{ _hubs | reject('search', 'controller=' ~ _dock_ctrl)
+         | select('search', 'wakeup=enabled') | list }}
+    _report: |
+      ===== ROOT HUBS =====
+      dock controller : {{ _dock_ctrl }}
+      {% for h in _hubs %}
+        {{ h }}
+      {% endfor %}
+
+      {{ (( (_internal | length) | string ) ~ ' internal hub(s) armed and will be DISARMED: '
+          ~ (_internal | join('; '))) if _internal else 'No internal hub is armed. Nothing to do.' }}
+      {{ ('Re-run with steamdeck_apply=true to write.' if not (steamdeck_apply | bool) else 'Disarming now.')
+         if _internal else '' }}
+
+- name: Disarm them
+  # Each path came from the read above rather than being hardcoded, so this cannot touch a hub
+  # on the dock's controller.
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -o pipefail
+      changed=0
+      for hub in {{ _internal | map('regex_replace', '^hub=(\S+).*$', '\1') | map('quote') | join(' ') }}; do
+        node="/sys/bus/usb/devices/$hub/power/wakeup"
+        if [ "$(cat "$node")" = "enabled" ]; then
+          echo disabled > "$node" && changed=$((changed+1)) && echo "disarmed $hub"
+        fi
+      done
+      echo "CHANGED=$changed"
+  become: true
+  register: _sd_disarm
+  changed_when: "'CHANGED=0' not in _sd_disarm.stdout"
+  vars:
+    _dock_ctrl: >-
+      {{ (_sd_hubs.stdout_lines | select('search', '^dock_controller=') | first | default('dock_controller=none-attached'))
+         | regex_replace('^dock_controller=', '') }}
+    _internal: >-
+      {{ _sd_hubs.stdout_lines | select('search', '^hub=')
+         | reject('search', 'controller=' ~ _dock_ctrl)
+         | select('search', 'wakeup=enabled') | list }}
+  when:
+    - steamdeck_apply | bool
+    - _internal | length > 0
+
+- name: Read the state back
+  # From sysfs, not from the write's exit status: a driver can accept a write and ignore it, so
+  # only the read-back is evidence.
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -o pipefail
+      for u in /sys/bus/usb/devices/usb*; do
+        [ -e "$u/power/wakeup" ] || continue
+        ctrl=$(readlink -f "$u" | grep -oE '0000:[0-9a-f]{2}:[0-9a-f]{2}\.[0-9]' | tail -1)
+        printf '%s controller=%s wakeup=%s\n' "$(basename "$u")" "$ctrl" "$(cat "$u/power/wakeup")"
+      done
+  register: _sd_after
+  changed_when: false
+  when: steamdeck_apply | bool
+
+- name: Report the result
+  ansible.builtin.debug:
+    msg:
+      - "{{ _sd_after.stdout_lines }}"
+      - >-
+        Disarmed for the RUNNING session. The corrected udev rule is what keeps them unarmed
+        across reboots; this only clears values set before that rule was fixed. The real proof is
+        a suspend that LASTS — check with steamdeck_action=wake_report, which reports suspend
+        durations.
+  when: steamdeck_apply | bool

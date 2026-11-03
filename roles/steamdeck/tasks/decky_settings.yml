@@ -1,0 +1,139 @@
+---
+# ENTRYPOINT: enforce settings inside Decky plugins.
+#
+# WHY THIS MATTERS RATHER THAN BEING A TOGGLE. decky-autoflatpaks can update flatpaks
+# unattended, and it has NO knowledge of EmuDeck — so an unattended update can move an emulator
+# past the version EmuDeck has reconciled its configuration against. The failure appears later,
+# as an emulator that has quietly stopped matching its config, with nothing connecting it to an
+# update that happened days earlier.
+#
+# Notify-only keeps the useful part (you are told there are updates) without the part that
+# changes things behind EmuDeck's back.
+#
+# PLUGINS DO NOT AGREE ON A CONFIG FORMAT. Seen across a typical set of plugins:
+# settings.json, config.json, settings.ini, steamgriddb.json and a bare scid.txt. The filename
+# is therefore declared per plugin in steamdeck_decky_settings_files rather than assumed —
+# assuming settings.json silently does nothing for most of them.
+#
+# DECKY IS STOPPED FOR THE EDIT. Plugins hold their settings in memory and rewrite the whole
+# file on commit, so a live edit is silently discarded — the same false-success shape as editing
+# shortcuts.vdf while Steam is running.
+
+- name: Apply role defaults
+  ansible.builtin.include_tasks: setup_vars.yml
+
+- name: Assert settings were declared
+  ansible.builtin.assert:
+    that:
+      - (steamdeck_decky_settings | length) > 0
+    fail_msg: >-
+      Declare steamdeck_decky_settings as {plugin_dir: {key: value}} — normally in inventory
+      rather than on the command line.
+    quiet: true
+
+- name: Install the settings helper
+  ansible.builtin.copy:
+    src: decky_plugin_settings.py
+    dest: "{{ steamdeck_helper_dir }}/decky_plugin_settings.py"
+    mode: "0755"
+
+- name: Report what would change
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/python3
+      - "{{ steamdeck_helper_dir }}/decky_plugin_settings.py"
+      - --path
+      - "{{ ansible_env.HOME }}/homebrew/settings/{{ item.key }}/{{ steamdeck_decky_settings_files[item.key] | default('settings.json') }}"
+      - --set
+      - "{{ item.value | to_json }}"
+  loop: "{{ steamdeck_decky_settings | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  register: _sd_ds_plan
+  changed_when: false
+  failed_when: false
+
+- name: Show the plan
+  ansible.builtin.debug:
+    msg: >-
+      {{ item.item.key }}:
+      {{ (item.stdout[item.stdout.find('{') :] | from_json).changes | default({}) }}
+      {{ '' if (steamdeck_apply | bool) else '(report only)' }}
+  loop: "{{ _sd_ds_plan.results }}"
+  loop_control:
+    label: "{{ item.item.key }}"
+
+- name: Stop Decky before editing plugin settings
+  ansible.builtin.systemd_service:
+    name: plugin_loader
+    state: stopped
+  become: true
+  when:
+    - steamdeck_apply | bool
+    - _sd_ds_changes | length > 0
+  vars:
+    _sd_ds_changes: >-
+      {{ _sd_ds_plan.results | map(attribute='stdout')
+         | select('search', '"changes": \{[^}]') | list }}
+
+- name: Apply the settings
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/python3
+      - "{{ steamdeck_helper_dir }}/decky_plugin_settings.py"
+      - --path
+      - "{{ ansible_env.HOME }}/homebrew/settings/{{ item.key }}/{{ steamdeck_decky_settings_files[item.key] | default('settings.json') }}"
+      - --set
+      - "{{ item.value | to_json }}"
+      - --apply
+  loop: "{{ steamdeck_decky_settings | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  register: _sd_ds_apply
+  changed_when: (_sd_ds_apply.stdout[_sd_ds_apply.stdout.find('{') :] | from_json).changed | bool
+  when: steamdeck_apply | bool
+
+- name: Start Decky again
+  ansible.builtin.systemd_service:
+    name: plugin_loader
+    state: started
+  become: true
+  when: steamdeck_apply | bool
+
+- name: Read the settings back
+  # From the files, not from the helper's own report — and after Decky has restarted, since a
+  # plugin rewriting its settings on startup is exactly the failure being guarded against.
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/python3
+      - "{{ steamdeck_helper_dir }}/decky_plugin_settings.py"
+      - --path
+      - "{{ ansible_env.HOME }}/homebrew/settings/{{ item.key }}/{{ steamdeck_decky_settings_files[item.key] | default('settings.json') }}"
+      - --set
+      - "{{ item.value | to_json }}"
+  loop: "{{ steamdeck_decky_settings | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  register: _sd_ds_after
+  changed_when: false
+  when: steamdeck_apply | bool
+
+- name: Assert every setting stuck
+  # An empty `changes` map on a re-read means the file matches what was asked for. A non-empty
+  # one means the plugin overwrote it when Decky restarted.
+  ansible.builtin.assert:
+    that:
+      - (item.stdout[item.stdout.find('{') :] | from_json).changes == {}
+    fail_msg: >-
+      {{ item.item.key }} did not keep its settings — the plugin rewrote them on restart:
+      {{ (item.stdout[item.stdout.find('{') :] | from_json).changes }}
+    quiet: true
+  loop: "{{ _sd_ds_after.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.key }}"
+  when: steamdeck_apply | bool
+
+- name: Report
+  ansible.builtin.debug:
+    msg: "Settings enforced and verified after a Decky restart."
+  when: steamdeck_apply | bool

@@ -1,0 +1,5 @@
+decky_plugin
+klei_dst_client
+service_dst_server
+steam_workshop
+steamdeck

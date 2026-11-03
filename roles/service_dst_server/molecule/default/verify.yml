@@ -1,0 +1,198 @@
+# Assert on the FILES the converge wrote — the game reads these, so these are the claim.
+---
+- name: Verify
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    _root: /tmp/molecule-service-dst-server
+    _cluster: /tmp/molecule-service-dst-server/data/DoNotStarveTogether/Cluster_1
+
+  tasks:
+    - name: Read the generated files
+      ansible.builtin.slurp:
+        src: "{{ item }}"
+      loop:
+        - "{{ _cluster }}/cluster.ini"
+        - "{{ _cluster }}/Master/server.ini"
+        - "{{ _cluster }}/Caves/server.ini"
+        - "{{ _cluster }}/Master/worldgenoverride.lua"
+        - "{{ _cluster }}/Caves/worldgenoverride.lua"
+        - "{{ _cluster }}/Lab/leveldataoverride.lua"
+        - "{{ _cluster }}/Master/modoverrides.lua"
+        - "{{ _cluster }}/Caves/modoverrides.lua"
+        - "{{ _cluster }}/adminlist.txt"
+        - "{{ _root }}/config/dedicated_server_mods_setup.lua"
+        - "{{ _root }}/rendered/dst-caves.service"
+        - "{{ _root }}/rendered/dst.target"
+      register: _files
+
+    - name: Index them by path
+      ansible.builtin.set_fact:
+        _f: >-
+          {{ dict(_files.results | map(attribute='item')
+                  | zip(_files.results | map(attribute='content') | map('b64decode'))) }}
+
+    - name: cluster.ini carries the declared values, typed
+      ansible.builtin.assert:
+        that:
+          - "'cluster_name = Molecule Den' in _c"
+          - "'offline_cluster = true' in _c"
+          - "'lan_only_cluster = true' in _c"
+          - "'max_players = 8' in _c"
+          - "'tick_rate = 30' in _c"
+          # Two ENABLED shards (Lab is disabled), so the shard link is on.
+          - "'shard_enabled = true' in _c"
+          - "'bind_ip = 127.0.0.1' in _c"
+          # dst_cluster_ini_extra: overrides a modelled key AND adds an unmodelled one.
+          - "'max_snapshots = 9' in _c"
+          - "'max_snapshots = 6' not in _c"
+          - "'extra_key = kept' in _c"
+          # steam_group_id 0 -> the whole [STEAM] section is omitted, not written as zeros.
+          - "'[STEAM]' not in _c"
+          - "'cluster_password = ' in _c"
+          # Python's True must never leak through as a capitalised word.
+          - "'True' not in _c and 'False' not in _c"
+        quiet: true
+      vars:
+        _c: "{{ _f[_cluster ~ '/cluster.ini'] }}"
+
+    - name: cluster.ini and the token are private
+      ansible.builtin.stat:
+        path: "{{ _cluster }}/cluster.ini"
+      register: _ci
+
+    - name: Offline cluster has no token file, and cluster.ini is 0600
+      ansible.builtin.stat:
+        path: "{{ _cluster }}/cluster_token.txt"
+      register: _tok
+
+    - name: Assert file modes and token absence
+      ansible.builtin.assert:
+        that:
+          - _ci.stat.mode == '0600'
+          - not _tok.stat.exists
+        quiet: true
+
+    - name: Each shard's server.ini names its role and ports
+      ansible.builtin.assert:
+        that:
+          - "'is_master = true' in _f[_cluster ~ '/Master/server.ini']"
+          - "'server_port = 10999' in _f[_cluster ~ '/Master/server.ini']"
+          - "'is_master = false' in _f[_cluster ~ '/Caves/server.ini']"
+          - "'name = Caves' in _f[_cluster ~ '/Caves/server.ini']"
+          - "'authentication_port = 8767' in _f[_cluster ~ '/Caves/server.ini']"
+          - "'tick_rate_note = caves' in _f[_cluster ~ '/Caves/server.ini']"
+          - "'encode_user_path = true' in _f[_cluster ~ '/Caves/server.ini']"
+        quiet: true
+
+    - name: World generation — preset per shard, leveldata replaces worldgen
+      ansible.builtin.assert:
+        that:
+          # The game's current keys — it converts a bare `preset` into these two (measured).
+          - '''worldgen_preset = "DST_CAVE"'' in _f[_cluster ~ ''/Caves/worldgenoverride.lua'']'
+          - '''settings_preset = "DST_CAVE"'' in _f[_cluster ~ ''/Caves/worldgenoverride.lua'']'
+          - '''season_start = "autumn"'' in _f[_cluster ~ ''/Master/worldgenoverride.lua'']'
+          - "'override_enabled = true' in _f[_cluster ~ '/Master/worldgenoverride.lua']"
+          - '''id = "CUSTOM"'' in _f[_cluster ~ ''/Lab/leveldataoverride.lua'']'
+        quiet: true
+
+    - name: The Lab shard has ONLY leveldataoverride.lua
+      ansible.builtin.stat:
+        path: "{{ _cluster }}/Lab/worldgenoverride.lua"
+      register: _lab_wg
+
+    - name: Assert the stale worldgen file is gone
+      ansible.builtin.assert:
+        that: [not _lab_wg.stat.exists]
+        quiet: true
+
+    - name: Mods — enabled per shard, typed config, disabled ones absent
+      ansible.builtin.assert:
+        that:
+          - '''["workshop-378160973"]'' in _m'
+          - "'SHOWPLAYERICONS = true' in _m"
+          - '''["Starting Items"] = "default"'' in _m'
+          - "'radius = 1.5' in _m"
+          - '''["workshop-666155465"]'' in _m'
+          - '''["workshop-2222"]'' in _m'
+          - "'workshop-1111' not in _m"
+          - '''["workshop-2222"]'' not in _cv'
+          - '''["workshop-378160973"]'' in _cv'
+        quiet: true
+      vars:
+        _m: "{{ _f[_cluster ~ '/Master/modoverrides.lua'] }}"
+        _cv: "{{ _f[_cluster ~ '/Caves/modoverrides.lua'] }}"
+
+    - name: The download list has every ENABLED mod and the collection, and nothing else
+      ansible.builtin.assert:
+        that:
+          - '''ServerModSetup("378160973")'' in _s'
+          - '''ServerModSetup("666155465")'' in _s'
+          - '''ServerModSetup("2222")'' in _s'
+          - "'1111' not in _s"
+          - '''ServerModCollectionSetup("9999")'' in _s'
+        quiet: true
+      vars:
+        _s: "{{ _f[_root ~ '/config/dedicated_server_mods_setup.lua'] }}"
+
+    - name: Admin list is one id per line
+      ansible.builtin.assert:
+        that:
+          - _f[_cluster ~ '/adminlist.txt'] | trim | split | list == ['KU_aaaa1111', 'KU_bbbb2222']
+        quiet: true
+
+    - name: The rendered units carry the load-bearing settings
+      ansible.builtin.assert:
+        that:
+          # A secondary shard is ordered after the master and stops with the target.
+          - "'After=dst-prepare.service dst-master.service' in _u"
+          - "'PartOf=dst.target' in _u"
+          - "'--stop-timeout 120' in _u"
+          - "':z' in _u and ':Z' not in _u"
+          - "'dst-shard Caves' in _u"
+          # The target wants only ENABLED shards — the disabled Lab must not start.
+          - "'dst-lab.service' not in _f[_root ~ '/rendered/dst.target']"
+          - "'Wants=dst-master.service dst-caves.service' in _f[_root ~ '/rendered/dst.target']"
+        quiet: true
+      vars:
+        _u: "{{ _f[_root ~ '/rendered/dst-caves.service'] }}"
+
+    - name: Rendered shell scripts parse
+      ansible.builtin.command:
+        argv: [bash, -n, "{{ item }}"]
+      loop:
+        - "{{ _root }}/rendered/dst-prepare-host.sh"
+        - "{{ _root }}/rendered/dst-backup.sh"
+        - "{{ playbook_dir }}/../../files/image/dst-shard.sh"
+        - "{{ playbook_dir }}/../../files/image/dst-console.sh"
+        - "{{ playbook_dir }}/../../files/image/dst-prepare.sh"
+      changed_when: false
+
+    - name: Look for a Lua interpreter
+      ansible.builtin.shell:
+        cmd: command -v luajit || command -v lua5.1 || command -v lua || true
+        executable: /bin/bash
+      register: _lua
+      changed_when: false
+
+    - name: Generated Lua files compile (when an interpreter is available)
+      ansible.builtin.command:
+        argv:
+          - "{{ _lua.stdout | trim }}"
+          - -e
+          - "assert(loadfile('{{ item }}'))"
+      loop:
+        - "{{ _cluster }}/Master/modoverrides.lua"
+        - "{{ _cluster }}/Caves/worldgenoverride.lua"
+        - "{{ _cluster }}/Lab/leveldataoverride.lua"
+        - "{{ _root }}/config/dedicated_server_mods_setup.lua"
+      changed_when: false
+      when: _lua.stdout | trim | length > 0
+
+    - name: Say whether the Lua compile check ran
+      ansible.builtin.debug:
+        msg: >-
+          {{ 'Lua compile check ran with ' ~ (_lua.stdout | trim)
+             if _lua.stdout | trim | length > 0
+             else 'NO Lua interpreter here — generated Lua was NOT compiled (string assertions only).' }}

@@ -1,0 +1,91 @@
+---
+# CONTROLLER: the trust check, the unpack, and the config judged BEFORE it reaches the device.
+#
+# THE PINNED SHA256 IS THE GATE. decky_plugin_package.py refuses the archive unless its digest
+# equals decky_plugin_sha256 (inventory). The release's own .sha256 asset is checked too, but only
+# as a cross-check: it is published by the same workflow as the zip, so agreeing with it proves
+# the download is intact, not that it is the build that was pinned.
+
+- name: Verify the archive against the pin and unpack it
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_playbook_python }}"
+      - "{{ role_path }}/files/decky_plugin_package.py"
+      - --archive
+      - "{{ _dp_archive }}"
+      - --sha256
+      - "{{ decky_plugin_sha256 }}"
+      - --sidecar
+      - "{{ _dp_sidecar }}"
+      - --directory
+      - "{{ decky_plugin_directory }}"
+      - --name
+      - "{{ decky_plugin_name }}"
+      - --out
+      - "{{ _dp_staging }}/packages"
+  register: _dp_pkg_run
+  # rc 2 is a REFUSAL with a JSON reason; the assert below turns it into a readable failure.
+  failed_when: _dp_pkg_run.rc not in [0, 2]
+  changed_when: _dp_pkg_run.rc == 0 and (_dp_pkg_run.stdout | from_json).changed | bool
+  delegate_to: localhost
+  run_once: true
+  become: false
+
+- name: HARD GATE — the archive was accepted
+  ansible.builtin.assert:
+    that: [_dp_pkg_run.rc == 0]
+    fail_msg: "REFUSED {{ _dp_archive | basename }}: {{ (_dp_pkg_run.stdout | from_json).error | default(_dp_pkg_run.stdout) }}"
+    quiet: true
+  run_once: true
+
+- name: Record the package
+  ansible.builtin.set_fact:
+    _dp_pkg: "{{ _dp_pkg_run.stdout | from_json }}"
+  run_once: true
+
+- name: The backend runs unprivileged (or the report says otherwise)
+  # Not a gate: a plugin may legitimately ask for root. But it changes what the plugin can do on
+  # the device, so the plan states it rather than leaving it to be read out of plugin.json.
+  ansible.builtin.set_fact:
+    _dp_runs_as: "{{ 'ROOT (plugin.json flags: root)' if 'root' in _dp_pkg.flags else 'the device user (no root flag)' }}"
+  run_once: true
+
+- name: Render the config on the controller
+  # Per HOST: the config is built from each device's inventory. Rendered here first so the
+  # plugin's OWN validator can judge exactly the bytes that will be written.
+  ansible.builtin.copy:
+    content: "{{ decky_plugin_config | to_nice_json(indent=2) }}\n"
+    dest: "{{ _dp_staging }}/packages/{{ _dp_pkg.sha256 }}/config-{{ inventory_hostname }}.json"
+    mode: "0600"
+  delegate_to: localhost
+  become: false
+  when: decky_plugin_config | length > 0
+
+- name: Judge the rendered config with the plugin's own validator
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_playbook_python }}"
+      - "{{ role_path }}/files/decky_plugin_probe.py"
+      - config
+      - --plugin-dir
+      - "{{ _dp_pkg.package_dir }}"
+      - --config
+      - "{{ _dp_staging }}/packages/{{ _dp_pkg.sha256 }}/config-{{ inventory_hostname }}.json"
+      - --config-check
+      - "{{ decky_plugin_config_check }}"
+  register: _dp_config_judged
+  changed_when: false
+  delegate_to: localhost
+  become: false
+  when: decky_plugin_config | length > 0
+
+- name: HARD GATE — the plugin accepts the config it is about to be given
+  # A config the plugin rejects installs "successfully" and then shows "not configured" in the
+  # panel. Caught here, before the device, where the reason is readable.
+  ansible.builtin.assert:
+    that: [(_dp_config_judged.stdout | from_json).verdict == 'parsed']
+    fail_msg: >-
+      The plugin's validator ({{ decky_plugin_config_check | default('json', true) }}) rejects the
+      config built from inventory: {{ (_dp_config_judged.stdout | from_json).detail }}
+    quiet: true
+  when: decky_plugin_config | length > 0

@@ -1,0 +1,181 @@
+---
+# AUTO-GENERATED defaults resolver — DO NOT EDIT.
+#
+# Source of truth: roles/service_dst_server/meta/argument_specs.py
+# Regenerate:      venv/bin/python tools/argspec/cli.py x generate service_dst_server
+#
+# Edits here are silently overwritten on the next generation. To change a value or its
+# documentation, change the OptionSpec in the source file above — descriptions there
+# are emitted as the comments in this file.
+
+# Binds every declared option to its generated default, so a caller-supplied value
+# wins and an unsupplied one falls back rather than evaluating Undefined.
+#
+# Include this FIRST from every entrypoint:
+#   - ansible.builtin.include_tasks: _resolve_defaults.yml
+#
+# Role-specific setup logic belongs in tasks/setup_vars.yml, NOT here — this file is
+# overwritten on every generation.
+#
+# TWO BRANCHES, because `set_fact` persists for the whole play. A role invoked twice in
+# one play would otherwise see its OWN leftover facts on the second call, so a later
+# caller that omitted an option silently inherited the earlier caller's value instead of
+# the declared default. On a repeat call this ignores the role's own facts and rebinds
+# the defaults; an include-level `vars:` shadows the fact, so a value the caller DID
+# supply this time still wins. Roles called once per play only ever run the first branch.
+
+- name: Resolve declared options over their generated defaults
+  ansible.builtin.set_fact:
+    dst_action: "{{ dst_action | default(dst_action__default) if dst_action__default is defined else dst_action | default(omit) }}"
+    dst_apply: "{{ dst_apply | default(dst_apply__default) if dst_apply__default is defined else dst_apply | default(omit) }}"
+    dst_restore_confirm: "{{ dst_restore_confirm | default(dst_restore_confirm__default) if dst_restore_confirm__default is defined else dst_restore_confirm | default(omit) }}"
+    dst_regenerate_confirm: "{{ dst_regenerate_confirm | default(dst_regenerate_confirm__default) if dst_regenerate_confirm__default is defined else dst_regenerate_confirm | default(omit) }}"
+    dst_purge_confirm: "{{ dst_purge_confirm | default(dst_purge_confirm__default) if dst_purge_confirm__default is defined else dst_purge_confirm | default(omit) }}"
+    dst_uninstall_confirm: "{{ dst_uninstall_confirm | default(dst_uninstall_confirm__default) if dst_uninstall_confirm__default is defined else dst_uninstall_confirm | default(omit) }}"
+    dst_instance: "{{ dst_instance | default(dst_instance__default) if dst_instance__default is defined else dst_instance | default(omit) }}"
+    dst_root: "{{ dst_root | default(dst_root__default) if dst_root__default is defined else dst_root | default(omit) }}"
+    dst_cluster_dir_name: "{{ dst_cluster_dir_name | default(dst_cluster_dir_name__default) if dst_cluster_dir_name__default is defined else dst_cluster_dir_name | default(omit) }}"
+    dst_python: "{{ dst_python | default(dst_python__default) if dst_python__default is defined else dst_python | default(omit) }}"
+    dst_podman: "{{ dst_podman | default(dst_podman__default) if dst_podman__default is defined else dst_podman | default(omit) }}"
+    dst_base_image: "{{ dst_base_image | default(dst_base_image__default) if dst_base_image__default is defined else dst_base_image | default(omit) }}"
+    dst_image_packages: "{{ dst_image_packages | default(dst_image_packages__default) if dst_image_packages__default is defined else dst_image_packages | default(omit) }}"
+    dst_image_name: "{{ dst_image_name | default(dst_image_name__default) if dst_image_name__default is defined else dst_image_name | default(omit) }}"
+    dst_beta_branch: "{{ dst_beta_branch | default(dst_beta_branch__default) if dst_beta_branch__default is defined else dst_beta_branch | default(omit) }}"
+    dst_update_on_start: "{{ dst_update_on_start | default(dst_update_on_start__default) if dst_update_on_start__default is defined else dst_update_on_start | default(omit) }}"
+    dst_update_validate: "{{ dst_update_validate | default(dst_update_validate__default) if dst_update_validate__default is defined else dst_update_validate | default(omit) }}"
+    dst_steamcmd_retries: "{{ dst_steamcmd_retries | default(dst_steamcmd_retries__default) if dst_steamcmd_retries__default is defined else dst_steamcmd_retries | default(omit) }}"
+    dst_cluster_description: "{{ dst_cluster_description | default(dst_cluster_description__default) if dst_cluster_description__default is defined else dst_cluster_description | default(omit) }}"
+    dst_game_mode: "{{ dst_game_mode | default(dst_game_mode__default) if dst_game_mode__default is defined else dst_game_mode | default(omit) }}"
+    dst_max_players: "{{ dst_max_players | default(dst_max_players__default) if dst_max_players__default is defined else dst_max_players | default(omit) }}"
+    dst_pvp: "{{ dst_pvp | default(dst_pvp__default) if dst_pvp__default is defined else dst_pvp | default(omit) }}"
+    dst_pause_when_empty: "{{ dst_pause_when_empty | default(dst_pause_when_empty__default) if dst_pause_when_empty__default is defined else dst_pause_when_empty | default(omit) }}"
+    dst_vote_enabled: "{{ dst_vote_enabled | default(dst_vote_enabled__default) if dst_vote_enabled__default is defined else dst_vote_enabled | default(omit) }}"
+    dst_vote_kick_enabled: "{{ dst_vote_kick_enabled | default(dst_vote_kick_enabled__default) if dst_vote_kick_enabled__default is defined else dst_vote_kick_enabled | default(omit) }}"
+    dst_cluster_intention: "{{ dst_cluster_intention | default(dst_cluster_intention__default) if dst_cluster_intention__default is defined else dst_cluster_intention | default(omit) }}"
+    dst_lan_only: "{{ dst_lan_only | default(dst_lan_only__default) if dst_lan_only__default is defined else dst_lan_only | default(omit) }}"
+    dst_offline: "{{ dst_offline | default(dst_offline__default) if dst_offline__default is defined else dst_offline | default(omit) }}"
+    dst_tick_rate: "{{ dst_tick_rate | default(dst_tick_rate__default) if dst_tick_rate__default is defined else dst_tick_rate | default(omit) }}"
+    dst_whitelist_slots: "{{ dst_whitelist_slots | default(dst_whitelist_slots__default) if dst_whitelist_slots__default is defined else dst_whitelist_slots | default(omit) }}"
+    dst_cluster_language: "{{ dst_cluster_language | default(dst_cluster_language__default) if dst_cluster_language__default is defined else dst_cluster_language | default(omit) }}"
+    dst_autosaver_enabled: "{{ dst_autosaver_enabled | default(dst_autosaver_enabled__default) if dst_autosaver_enabled__default is defined else dst_autosaver_enabled | default(omit) }}"
+    dst_console_enabled: "{{ dst_console_enabled | default(dst_console_enabled__default) if dst_console_enabled__default is defined else dst_console_enabled | default(omit) }}"
+    dst_max_snapshots: "{{ dst_max_snapshots | default(dst_max_snapshots__default) if dst_max_snapshots__default is defined else dst_max_snapshots | default(omit) }}"
+    dst_steam_group_id: "{{ dst_steam_group_id | default(dst_steam_group_id__default) if dst_steam_group_id__default is defined else dst_steam_group_id | default(omit) }}"
+    dst_steam_group_only: "{{ dst_steam_group_only | default(dst_steam_group_only__default) if dst_steam_group_only__default is defined else dst_steam_group_only | default(omit) }}"
+    dst_steam_group_admins: "{{ dst_steam_group_admins | default(dst_steam_group_admins__default) if dst_steam_group_admins__default is defined else dst_steam_group_admins | default(omit) }}"
+    dst_shard_bind_ip: "{{ dst_shard_bind_ip | default(dst_shard_bind_ip__default) if dst_shard_bind_ip__default is defined else dst_shard_bind_ip | default(omit) }}"
+    dst_shard_master_port: "{{ dst_shard_master_port | default(dst_shard_master_port__default) if dst_shard_master_port__default is defined else dst_shard_master_port | default(omit) }}"
+    dst_cluster_ini_extra: "{{ dst_cluster_ini_extra | default(dst_cluster_ini_extra__default) if dst_cluster_ini_extra__default is defined else dst_cluster_ini_extra | default(omit) }}"
+    dst_cluster_token: "{{ dst_cluster_token | default(dst_cluster_token__default) if dst_cluster_token__default is defined else dst_cluster_token | default(omit) }}"
+    dst_cluster_password: "{{ dst_cluster_password | default(dst_cluster_password__default) if dst_cluster_password__default is defined else dst_cluster_password | default(omit) }}"
+    dst_secret_vault: "{{ dst_secret_vault | default(dst_secret_vault__default) if dst_secret_vault__default is defined else dst_secret_vault | default(omit) }}"
+    dst_cluster_token_item: "{{ dst_cluster_token_item | default(dst_cluster_token_item__default) if dst_cluster_token_item__default is defined else dst_cluster_token_item | default(omit) }}"
+    dst_cluster_token_field: "{{ dst_cluster_token_field | default(dst_cluster_token_field__default) if dst_cluster_token_field__default is defined else dst_cluster_token_field | default(omit) }}"
+    dst_cluster_password_item: "{{ dst_cluster_password_item | default(dst_cluster_password_item__default) if dst_cluster_password_item__default is defined else dst_cluster_password_item | default(omit) }}"
+    dst_cluster_password_field: "{{ dst_cluster_password_field | default(dst_cluster_password_field__default) if dst_cluster_password_field__default is defined else dst_cluster_password_field | default(omit) }}"
+    dst_admins: "{{ dst_admins | default(dst_admins__default) if dst_admins__default is defined else dst_admins | default(omit) }}"
+    dst_whitelist: "{{ dst_whitelist | default(dst_whitelist__default) if dst_whitelist__default is defined else dst_whitelist | default(omit) }}"
+    dst_blocklist: "{{ dst_blocklist | default(dst_blocklist__default) if dst_blocklist__default is defined else dst_blocklist | default(omit) }}"
+    dst_shards: "{{ dst_shards | default(dst_shards__default) if dst_shards__default is defined else dst_shards | default(omit) }}"
+    dst_mods: "{{ dst_mods | default(dst_mods__default) if dst_mods__default is defined else dst_mods | default(omit) }}"
+    dst_mod_collections: "{{ dst_mod_collections | default(dst_mod_collections__default) if dst_mod_collections__default is defined else dst_mod_collections | default(omit) }}"
+    dst_mods_update_on_start: "{{ dst_mods_update_on_start | default(dst_mods_update_on_start__default) if dst_mods_update_on_start__default is defined else dst_mods_update_on_start | default(omit) }}"
+    dst_autostart: "{{ dst_autostart | default(dst_autostart__default) if dst_autostart__default is defined else dst_autostart | default(omit) }}"
+    dst_linger: "{{ dst_linger | default(dst_linger__default) if dst_linger__default is defined else dst_linger | default(omit) }}"
+    dst_stop_timeout: "{{ dst_stop_timeout | default(dst_stop_timeout__default) if dst_stop_timeout__default is defined else dst_stop_timeout | default(omit) }}"
+    dst_start_timeout: "{{ dst_start_timeout | default(dst_start_timeout__default) if dst_start_timeout__default is defined else dst_start_timeout | default(omit) }}"
+    dst_backup_on_start: "{{ dst_backup_on_start | default(dst_backup_on_start__default) if dst_backup_on_start__default is defined else dst_backup_on_start | default(omit) }}"
+    dst_backup_keep: "{{ dst_backup_keep | default(dst_backup_keep__default) if dst_backup_keep__default is defined else dst_backup_keep | default(omit) }}"
+    dst_firewalld_manage: "{{ dst_firewalld_manage | default(dst_firewalld_manage__default) if dst_firewalld_manage__default is defined else dst_firewalld_manage | default(omit) }}"
+    dst_firewalld_zone: "{{ dst_firewalld_zone | default(dst_firewalld_zone__default) if dst_firewalld_zone__default is defined else dst_firewalld_zone | default(omit) }}"
+    dst_control_enabled: "{{ dst_control_enabled | default(dst_control_enabled__default) if dst_control_enabled__default is defined else dst_control_enabled | default(omit) }}"
+    dst_control_port: "{{ dst_control_port | default(dst_control_port__default) if dst_control_port__default is defined else dst_control_port | default(omit) }}"
+    dst_control_allow: "{{ dst_control_allow | default(dst_control_allow__default) if dst_control_allow__default is defined else dst_control_allow | default(omit) }}"
+    dst_control_interval: "{{ dst_control_interval | default(dst_control_interval__default) if dst_control_interval__default is defined else dst_control_interval | default(omit) }}"
+    dst_idle_shutdown_minutes: "{{ dst_idle_shutdown_minutes | default(dst_idle_shutdown_minutes__default) if dst_idle_shutdown_minutes__default is defined else dst_idle_shutdown_minutes | default(omit) }}"
+    dst_idle_startup_grace_minutes: "{{ dst_idle_startup_grace_minutes | default(dst_idle_startup_grace_minutes__default) if dst_idle_startup_grace_minutes__default is defined else dst_idle_startup_grace_minutes | default(omit) }}"
+    dst_idle_shutdown_mode: "{{ dst_idle_shutdown_mode | default(dst_idle_shutdown_mode__default) if dst_idle_shutdown_mode__default is defined else dst_idle_shutdown_mode | default(omit) }}"
+  when: not (_service_dst_server__argspec_resolved | default(false))
+  # At least one option carries no_log, and set_fact would otherwise print every
+  # resolved value — including that one — in the task result.
+  no_log: true
+
+- name: Rebind the defaults on a repeat call, ignoring this role's own leftover facts
+  ansible.builtin.set_fact:
+    dst_action: "{{ dst_action__default if dst_action__default is defined else dst_action | default(omit) }}"
+    dst_apply: "{{ dst_apply__default if dst_apply__default is defined else dst_apply | default(omit) }}"
+    dst_restore_confirm: "{{ dst_restore_confirm__default if dst_restore_confirm__default is defined else dst_restore_confirm | default(omit) }}"
+    dst_regenerate_confirm: "{{ dst_regenerate_confirm__default if dst_regenerate_confirm__default is defined else dst_regenerate_confirm | default(omit) }}"
+    dst_purge_confirm: "{{ dst_purge_confirm__default if dst_purge_confirm__default is defined else dst_purge_confirm | default(omit) }}"
+    dst_uninstall_confirm: "{{ dst_uninstall_confirm__default if dst_uninstall_confirm__default is defined else dst_uninstall_confirm | default(omit) }}"
+    dst_instance: "{{ dst_instance__default if dst_instance__default is defined else dst_instance | default(omit) }}"
+    dst_root: "{{ dst_root__default if dst_root__default is defined else dst_root | default(omit) }}"
+    dst_cluster_dir_name: "{{ dst_cluster_dir_name__default if dst_cluster_dir_name__default is defined else dst_cluster_dir_name | default(omit) }}"
+    dst_python: "{{ dst_python__default if dst_python__default is defined else dst_python | default(omit) }}"
+    dst_podman: "{{ dst_podman__default if dst_podman__default is defined else dst_podman | default(omit) }}"
+    dst_base_image: "{{ dst_base_image__default if dst_base_image__default is defined else dst_base_image | default(omit) }}"
+    dst_image_packages: "{{ dst_image_packages__default if dst_image_packages__default is defined else dst_image_packages | default(omit) }}"
+    dst_image_name: "{{ dst_image_name__default if dst_image_name__default is defined else dst_image_name | default(omit) }}"
+    dst_beta_branch: "{{ dst_beta_branch__default if dst_beta_branch__default is defined else dst_beta_branch | default(omit) }}"
+    dst_update_on_start: "{{ dst_update_on_start__default if dst_update_on_start__default is defined else dst_update_on_start | default(omit) }}"
+    dst_update_validate: "{{ dst_update_validate__default if dst_update_validate__default is defined else dst_update_validate | default(omit) }}"
+    dst_steamcmd_retries: "{{ dst_steamcmd_retries__default if dst_steamcmd_retries__default is defined else dst_steamcmd_retries | default(omit) }}"
+    dst_cluster_description: "{{ dst_cluster_description__default if dst_cluster_description__default is defined else dst_cluster_description | default(omit) }}"
+    dst_game_mode: "{{ dst_game_mode__default if dst_game_mode__default is defined else dst_game_mode | default(omit) }}"
+    dst_max_players: "{{ dst_max_players__default if dst_max_players__default is defined else dst_max_players | default(omit) }}"
+    dst_pvp: "{{ dst_pvp__default if dst_pvp__default is defined else dst_pvp | default(omit) }}"
+    dst_pause_when_empty: "{{ dst_pause_when_empty__default if dst_pause_when_empty__default is defined else dst_pause_when_empty | default(omit) }}"
+    dst_vote_enabled: "{{ dst_vote_enabled__default if dst_vote_enabled__default is defined else dst_vote_enabled | default(omit) }}"
+    dst_vote_kick_enabled: "{{ dst_vote_kick_enabled__default if dst_vote_kick_enabled__default is defined else dst_vote_kick_enabled | default(omit) }}"
+    dst_cluster_intention: "{{ dst_cluster_intention__default if dst_cluster_intention__default is defined else dst_cluster_intention | default(omit) }}"
+    dst_lan_only: "{{ dst_lan_only__default if dst_lan_only__default is defined else dst_lan_only | default(omit) }}"
+    dst_offline: "{{ dst_offline__default if dst_offline__default is defined else dst_offline | default(omit) }}"
+    dst_tick_rate: "{{ dst_tick_rate__default if dst_tick_rate__default is defined else dst_tick_rate | default(omit) }}"
+    dst_whitelist_slots: "{{ dst_whitelist_slots__default if dst_whitelist_slots__default is defined else dst_whitelist_slots | default(omit) }}"
+    dst_cluster_language: "{{ dst_cluster_language__default if dst_cluster_language__default is defined else dst_cluster_language | default(omit) }}"
+    dst_autosaver_enabled: "{{ dst_autosaver_enabled__default if dst_autosaver_enabled__default is defined else dst_autosaver_enabled | default(omit) }}"
+    dst_console_enabled: "{{ dst_console_enabled__default if dst_console_enabled__default is defined else dst_console_enabled | default(omit) }}"
+    dst_max_snapshots: "{{ dst_max_snapshots__default if dst_max_snapshots__default is defined else dst_max_snapshots | default(omit) }}"
+    dst_steam_group_id: "{{ dst_steam_group_id__default if dst_steam_group_id__default is defined else dst_steam_group_id | default(omit) }}"
+    dst_steam_group_only: "{{ dst_steam_group_only__default if dst_steam_group_only__default is defined else dst_steam_group_only | default(omit) }}"
+    dst_steam_group_admins: "{{ dst_steam_group_admins__default if dst_steam_group_admins__default is defined else dst_steam_group_admins | default(omit) }}"
+    dst_shard_bind_ip: "{{ dst_shard_bind_ip__default if dst_shard_bind_ip__default is defined else dst_shard_bind_ip | default(omit) }}"
+    dst_shard_master_port: "{{ dst_shard_master_port__default if dst_shard_master_port__default is defined else dst_shard_master_port | default(omit) }}"
+    dst_cluster_ini_extra: "{{ dst_cluster_ini_extra__default if dst_cluster_ini_extra__default is defined else dst_cluster_ini_extra | default(omit) }}"
+    dst_cluster_token: "{{ dst_cluster_token__default if dst_cluster_token__default is defined else dst_cluster_token | default(omit) }}"
+    dst_cluster_password: "{{ dst_cluster_password__default if dst_cluster_password__default is defined else dst_cluster_password | default(omit) }}"
+    dst_secret_vault: "{{ dst_secret_vault__default if dst_secret_vault__default is defined else dst_secret_vault | default(omit) }}"
+    dst_cluster_token_item: "{{ dst_cluster_token_item__default if dst_cluster_token_item__default is defined else dst_cluster_token_item | default(omit) }}"
+    dst_cluster_token_field: "{{ dst_cluster_token_field__default if dst_cluster_token_field__default is defined else dst_cluster_token_field | default(omit) }}"
+    dst_cluster_password_item: "{{ dst_cluster_password_item__default if dst_cluster_password_item__default is defined else dst_cluster_password_item | default(omit) }}"
+    dst_cluster_password_field: "{{ dst_cluster_password_field__default if dst_cluster_password_field__default is defined else dst_cluster_password_field | default(omit) }}"
+    dst_admins: "{{ dst_admins__default if dst_admins__default is defined else dst_admins | default(omit) }}"
+    dst_whitelist: "{{ dst_whitelist__default if dst_whitelist__default is defined else dst_whitelist | default(omit) }}"
+    dst_blocklist: "{{ dst_blocklist__default if dst_blocklist__default is defined else dst_blocklist | default(omit) }}"
+    dst_shards: "{{ dst_shards__default if dst_shards__default is defined else dst_shards | default(omit) }}"
+    dst_mods: "{{ dst_mods__default if dst_mods__default is defined else dst_mods | default(omit) }}"
+    dst_mod_collections: "{{ dst_mod_collections__default if dst_mod_collections__default is defined else dst_mod_collections | default(omit) }}"
+    dst_mods_update_on_start: "{{ dst_mods_update_on_start__default if dst_mods_update_on_start__default is defined else dst_mods_update_on_start | default(omit) }}"
+    dst_autostart: "{{ dst_autostart__default if dst_autostart__default is defined else dst_autostart | default(omit) }}"
+    dst_linger: "{{ dst_linger__default if dst_linger__default is defined else dst_linger | default(omit) }}"
+    dst_stop_timeout: "{{ dst_stop_timeout__default if dst_stop_timeout__default is defined else dst_stop_timeout | default(omit) }}"
+    dst_start_timeout: "{{ dst_start_timeout__default if dst_start_timeout__default is defined else dst_start_timeout | default(omit) }}"
+    dst_backup_on_start: "{{ dst_backup_on_start__default if dst_backup_on_start__default is defined else dst_backup_on_start | default(omit) }}"
+    dst_backup_keep: "{{ dst_backup_keep__default if dst_backup_keep__default is defined else dst_backup_keep | default(omit) }}"
+    dst_firewalld_manage: "{{ dst_firewalld_manage__default if dst_firewalld_manage__default is defined else dst_firewalld_manage | default(omit) }}"
+    dst_firewalld_zone: "{{ dst_firewalld_zone__default if dst_firewalld_zone__default is defined else dst_firewalld_zone | default(omit) }}"
+    dst_control_enabled: "{{ dst_control_enabled__default if dst_control_enabled__default is defined else dst_control_enabled | default(omit) }}"
+    dst_control_port: "{{ dst_control_port__default if dst_control_port__default is defined else dst_control_port | default(omit) }}"
+    dst_control_allow: "{{ dst_control_allow__default if dst_control_allow__default is defined else dst_control_allow | default(omit) }}"
+    dst_control_interval: "{{ dst_control_interval__default if dst_control_interval__default is defined else dst_control_interval | default(omit) }}"
+    dst_idle_shutdown_minutes: "{{ dst_idle_shutdown_minutes__default if dst_idle_shutdown_minutes__default is defined else dst_idle_shutdown_minutes | default(omit) }}"
+    dst_idle_startup_grace_minutes: "{{ dst_idle_startup_grace_minutes__default if dst_idle_startup_grace_minutes__default is defined else dst_idle_startup_grace_minutes | default(omit) }}"
+    dst_idle_shutdown_mode: "{{ dst_idle_shutdown_mode__default if dst_idle_shutdown_mode__default is defined else dst_idle_shutdown_mode | default(omit) }}"
+  when: _service_dst_server__argspec_resolved | default(false)
+  # At least one option carries no_log, and set_fact would otherwise print every
+  # resolved value — including that one — in the task result.
+  no_log: true
+
+- name: Record that this role has resolved its options in this play
+  ansible.builtin.set_fact:
+    _service_dst_server__argspec_resolved: true

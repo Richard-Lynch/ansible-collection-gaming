@@ -1,0 +1,585 @@
+---
+# AUTO-GENERATED argument spec — DO NOT EDIT.
+#
+# Source of truth: roles/steamdeck/meta/argument_specs.py
+# Regenerate:      venv/bin/python tools/argspec/cli.py x generate steamdeck
+#
+# Edits here are silently overwritten on the next generation. To change a value or its
+# documentation, change the OptionSpec in the source file above — descriptions there
+# are emitted as the comments in this file.
+argument_specs:
+  main:
+    short_description: Manage the Steam Deck (SteamOS) — reporting and user-level config
+    description:
+      - SteamOS replaces its rootfs on major updates and requires a password for sudo,
+      - 'so this role deliberately stays in user space: application configuration under'
+      - $HOME, and read-only reporting. Nothing it writes is lost by a system update.
+    version_added: '1.0'
+    author: Collection maintainers
+    options:
+      steamdeck_action:
+        description:
+          - Which entrypoint to run. Defaults to the read-only probe, so a bare
+          - run against an unfamiliar device changes nothing.
+        type: str
+        required: false
+        default: probe
+        choices:
+          - probe
+          - moonlight_report
+          - moonlight
+          - shortcuts_report
+          - shortcuts
+          - remove_app
+          - artwork
+          - wake_report
+          - wol_report
+          - wake_host
+          - steam_restart_host
+          - dst_control
+          - dst_play
+          - wol_persist
+          - wol_verify
+          - wol_disarm_wifi
+          - wol_disarm_internal
+          - reboot
+          - close_game
+          - battery
+          - status
+          - decky_plugins
+          - decky_settings
+          - css_themes
+          - rootfs_report
+          - emudeck_report
+          - emudeck
+          - all
+      steamdeck_apply:
+        description:
+          - Actually make changes. Default false reports the planned work and
+          - stops.
+        type: bool
+        required: false
+        default: false
+      steamdeck_probe_output:
+        description:
+          - Optional path on the CONTROLLER to write the probe's JSON to, for
+          - diffing against a later run. Empty means report only.
+        type: str
+        required: false
+        default: ''
+      steamdeck_remove_app:
+        description:
+          - Exact AppName of a non-Steam shortcut to remove completely.
+          - Reports the blast radius and stops unless the name is also given as
+          - steamdeck_remove_confirm.
+        type: str
+        required: false
+        default: ''
+      steamdeck_remove_confirm:
+        description:
+          - Must equal steamdeck_remove_app for the deletion to proceed.
+          - A boolean flag is too easy to carry over from a previous command;
+          - typing the name back is a deliberate act. This deletes a Proton prefix
+          - — tens of GB of local settings and mods that nothing backs up.
+        type: str
+        required: false
+        default: ''
+      steamdeck_remove_data:
+        description:
+          - Also delete the Proton prefix and leftover installers, not just the
+          - shortcut. False removes the library entry and leaves the data.
+        type: bool
+        required: false
+        default: true
+      steamdeck_helper_dir:
+        description: Where role helper scripts are staged on the target.
+        type: str
+        required: false
+        default: /tmp
+      steamdeck_steam_userdir:
+        description:
+          - Steam per-account config directory, e.g. ~/.steam/steam/userdata/NNN.
+          - Discovered automatically when empty; name it explicitly only if the
+          - device has more than one Steam account, where guessing would edit the
+          - wrong profile.
+        type: str
+        required: false
+        default: ''
+      steamdeck_decky_settings_files:
+        description:
+          - 'Per-plugin settings FILENAME, as {plugin_dir: filename}, for each plugin'
+          - named in steamdeck_decky_settings whose file is not settings.json.
+          - Plugins do not agree on a name or a format (settings.json, config.json,
+          - settings.ini, a plugin-named .json, a bare .txt), and assuming
+          - settings.json silently does nothing for those. JSON and INI are both
+          - handled; for INI use 'section.key' names.
+        type: dict
+        required: false
+        default: {}
+      steamdeck_decky_settings:
+        description:
+          - Settings to enforce inside Decky plugins, as
+          - '{plugin_dir: {key: value}}. Declare in inventory, not on the command'
+          - line — these describe how the device should behave, not this run.
+          - 'Values are compared by TYPE as well as value: a bool written as the'
+          - string 'false' is truthy to a plugin's frontend, which is a silent
+          - misconfiguration rather than an error.
+        type: dict
+        required: false
+        default: {}
+      steamdeck_emudeck_settings:
+        description:
+          - Keys to enforce in ~/.config/EmuDeck/settings.json.
+          - MERGED into the file on the device, not templated over it — each
+          - emulator entry carries EmuDeck's own metadata (id/name/platforms)
+          - which differs between entries and changes between releases, so
+          - reproducing it here would pin the device to one EmuDeck version.
+          - Within installEmus/overwriteConfigEmus/installFrontends a bare bool
+          - 'is shorthand for {status: <bool>}.'
+          - 'overwriteConfigEmus is the one that matters: true means a setup.sh'
+          - rerun REPLACES that emulator's config, reverting any hand-tuning.
+        type: dict
+        required: false
+        default: {}
+      steamdeck_emudeck_secrets:
+        description:
+          - settings.json credential fields to resolve from 1Password, as
+          - '{path: {item, field, vault}}. Path may be dotted for nested fields,'
+          - e.g. 'achievements.user'. Resolved through the CACHED lookup.
+          - 'EMPTY BY DEFAULT, deliberately: with nothing declared the credentials'
+          - already on the device are left alone. This play's value is in
+          - overwriteConfigEmus — rewriting a password that is already correct
+          - earns nothing and adds a way to get it wrong.
+        type: dict
+        required: false
+        default: {}
+      steamdeck_css_themes:
+        description:
+          - CSS Loader themes to install and configure, as a list of
+          - '{name, id, patches, enabled}. `id` is the DeckThemes uuid — the'
+          - themeId in https://deckthemes.com/themes/view?themeId=...
+          - "`patches` selects a theme's own options by their EXACT declared names"
+          - and values; both are validated against the theme's theme.json, because
+          - CSS Loader silently substitutes the default for anything it does not
+          - recognise rather than reporting an error.
+          - '`enabled: false` keeps a theme installed and configured but inactive.'
+          - Declare in inventory — which themes a device wears is device
+          - configuration, not a property of one run.
+        type: list
+        required: false
+        default: []
+        elements: dict
+      steamdeck_css_remove:
+        description:
+          - CSS Loader theme FOLDER names to uninstall from ~/homebrew/themes.
+          - 'REQUIRED to uninstall: nothing reconciles the themes directory against'
+          - inventory, so removing a theme's steamdeck_css_themes entry leaves it
+          - installed and STILL ACTIVE — undeclared, unreported, and still styling
+          - the UI.
+          - 'Sequence: `enabled: false` -> apply -> confirm the device wrote'
+          - '{"active": false} -> name the folder here -> apply -> then drop the'
+          - steamdeck_css_themes lines.
+          - A name appearing in BOTH lists is a hard error, not a precedence rule.
+        type: list
+        required: false
+        default: []
+        elements: str
+      steamdeck_decky_remove:
+        description:
+          - Decky plugin directory names to remove completely.
+          - Removal covers the plugin dir, ~/.config/<name>, per-plugin settings
+          - and the references Decky keeps in plugin_loader_settings.json —
+          - deleting only the directory leaves the last of those orphaned.
+          - NOTE any sysfs values the plugin applied (TDP, clocks) persist until a
+          - reboot; removal only stops them being reapplied.
+        type: list
+        required: false
+        default: []
+        elements: str
+      steamdeck_battery_limit:
+        description:
+          - Cap the battery charge at this percentage; 100 disables the cap.
+          - 80 is the usual compromise — lithium cells degrade fastest held near
+          - full, and a mostly-docked device sits there constantly. Raise it to
+          - 100 before travelling.
+        type: int
+        required: false
+        default: 80
+      steamdeck_battery_unit:
+        description:
+          - Unit that re-applies the charge cap at boot; the sysfs node resets to
+          - 0 on every boot.
+        type: str
+        required: false
+        default: iaac-battery-limit.service
+      steamdeck_close_game_timeout:
+        description:
+          - "close_game: seconds to wait after SIGTERM before SIGKILLing the game's"
+          - process tree.
+        type: int
+        required: false
+        default: 30
+      steamdeck_reboot_confirm:
+        description:
+          - Confirms the wol_verify entrypoint may REBOOT the device.
+          - Separate from steamdeck_apply so a reboot cannot happen as a side
+          - effect of a broader run.
+        type: bool
+        required: false
+        default: false
+      steamdeck_reboot_timeout:
+        description: Seconds to wait for the device to return after a reboot.
+        type: int
+        required: false
+        default: 300
+      steamdeck_wol_udev_rule:
+        description:
+          - udev rule that enables wakeup as each device appears.
+          - 'The PRIMARY mechanism: power/wakeup resets on every device add, so a'
+          - dock replug re-disables the chain and a boot-time service cannot see
+          - it. /etc is an overlayfs backed by the var partition, which SteamOS
+          - syncs across atomic updates.
+        type: str
+        required: false
+        default: 99-iaac-wol-wakeup.rules
+      steamdeck_wol_unit:
+        description:
+          - Name of the boot-time unit that re-enables USB/PCI wakeup flags.
+          - Installed to /etc/systemd/system because Valve's atomic-update keep
+          - list preserves *.service there across OS updates — a udev rule, the
+          - otherwise obvious mechanism, is NOT preserved and would vanish.
+        type: str
+        required: false
+        default: iaac-usb-wakeup.service
+      steamdeck_wake_target:
+        description:
+          - Inventory NAME of the host to wake, used in the script's log lines and
+          - messages. Empty means the wake_host entrypoint refuses to run.
+        type: str
+        required: false
+        default: ''
+      steamdeck_wake_mac:
+        description:
+          - The target's WIRED NIC MAC. Wake-on-WiFi is rarely available, and the
+          - value must be recorded in inventory because every live source (DHCP
+          - leases, ARP, a network controller's client list) is empty exactly when
+          - the host is off and the value is needed.
+        type: str
+        required: false
+        default: ''
+      steamdeck_wake_broadcast:
+        description:
+          - Broadcast address of the TARGET's own VLAN (e.g. 192.0.2.255). A magic
+          - packet is a layer-2 broadcast and does not cross subnets, so sending to
+          - 255.255.255.255 from elsewhere reaches nothing — and because the packet
+          - is unacknowledged UDP, that failure is completely silent.
+        type: str
+        required: false
+        default: ''
+      steamdeck_wake_port:
+        description:
+          - UDP port for the magic packet. 9 (discard) is conventional; 7 also
+          - works. Unprivileged either way, which is what lets a Game Mode tile
+          - send it without a sudo password.
+        type: int
+        required: false
+        default: 9
+      steamdeck_wake_probe_host:
+        description:
+          - Address to probe to decide whether the wake WORKED. Sending proves
+          - nothing — the packet is unacknowledged — so this is the only honest
+          - 'signal. Prefer an IP or a name that resolves to the WIRED address: a'
+          - name that falls back to WiFi can never come up from a magic packet, and
+          - a successful wake would be reported as a failure.
+        type: str
+        required: false
+        default: ''
+      steamdeck_wake_probe_port:
+        description:
+          - Port to probe on the target. 22 answers early in boot, so it reports a
+          - wake sooner than a game-streaming port would.
+        type: int
+        required: false
+        default: 22
+      steamdeck_steam_guard_url:
+        description:
+          - Base URL of the streaming host's Steam guard, e.g.
+          - http://<host name>:8090. The restart tile POSTs <url>/steam/restart and
+          - polls <url>/healthz. Use a DNS NAME, and declare it in inventory.
+        type: str
+        required: false
+        default: ''
+      steamdeck_steam_guard_target:
+        description: Inventory name of the host whose Steam the tile restarts (for messages).
+        type: str
+        required: false
+        default: ''
+      steamdeck_steam_guard_timeout:
+        description:
+          - Seconds the tile waits for a fresh Steam with Remote Play listening
+          - before reporting the restart did not come back.
+        type: int
+        required: false
+        default: 150
+      steamdeck_dst_control_url:
+        description:
+          - Base URL of a Don't Starve Together server's control endpoint, e.g.
+          - http://<host name>:8091 (the service_dst_server role). iaac-dst.sh
+          - POSTs <url>/start or /stop and polls <url>/healthz. Use a DNS NAME, and
+          - declare it in inventory.
+        type: str
+        required: false
+        default: ''
+      steamdeck_dst_control_target:
+        description: Inventory name of the host running the DST server (for messages).
+        type: str
+        required: false
+        default: ''
+      steamdeck_dst_start_timeout:
+        description:
+          - Seconds the Start tile waits for every shard to be listening. A start
+          - after a game patch downloads the update first, hence the long default.
+        type: int
+        required: false
+        default: 900
+      steamdeck_dst_play_host:
+        description:
+          - "dst_play: the DST server's NAME, resolved on the Deck at press time"
+          - (+connect needs an address, and which one answers depends on the network).
+        type: str
+        required: false
+        default: ''
+      steamdeck_dst_play_port:
+        description: "dst_play: the server's MASTER shard port (DST's default 10999)."
+        type: int
+        required: false
+        default: 10999
+      steamdeck_dst_play_password_item:
+        description: "dst_play: the 1Password item holding the server's join password."
+        type: str
+        required: false
+        default: ''
+      steamdeck_dst_play_password_field:
+        description: 'dst_play: the field of that item.'
+        type: str
+        required: false
+        default: password
+      steamdeck_dst_play_secret_vault:
+        description:
+          - 'dst_play: the 1Password vault of that item. Required when'
+          - steamdeck_dst_play_password_item is set.
+        type: str
+        required: false
+        default: ''
+      steamdeck_dst_play_join_timeout:
+        description:
+          - 'dst_play: seconds to wait, after launching, for the SERVER to count a'
+          - 'player (/healthz players >= 1): Proton start, the connect, and the'
+          - server's mods downloading on a first join.
+        type: int
+        required: false
+        default: 300
+      steamdeck_dst_play_stop_grace:
+        description:
+          - 'dst_play: after DST exits, the server must read 0 players twice this many'
+          - seconds apart before the tile stops it (a quick rejoin keeps it up).
+        type: int
+        required: false
+        default: 60
+      steamdeck_wake_timeout:
+        description:
+          - Seconds to wait for the target to answer before reporting it did not
+          - wake. A cold boot from S5 is slower than a resume from suspend.
+        type: int
+        required: false
+        default: 120
+      steamdeck_wake_endpoint:
+        description:
+          - URL the script GETs when this Deck is NOT on the target's segment —
+          - i.e. undocked, on WiFi. A layer-2 broadcast cannot cross a VLAN, so a
+          - direct send from another subnet SUCCEEDS and reaches nothing; this asks
+          - a host that DOES have a leg there to send it instead.
+          - A relay with a leg on every VLAN and its own allowlist of what may be
+          - 'woken suits this well: the Deck then needs no SSH key, no credential'
+          - and nothing to rotate.
+          - Use a DNS NAME on the VLAN the Deck reaches it from, not an address.
+          - 'Empty means no fallback: the script then reports honestly that it'
+          - cannot reach the target rather than sending into nowhere.
+        type: str
+        required: false
+        default: ''
+      steamdeck_sudo_secret_item:
+        description:
+          - 1Password item holding this device's sudo password.
+          - The inventory names the ITEM; the role resolves it through the cached
+          - lookup, so the secret appears in neither the inventory nor a command
+          - line. Empty means no privileged tasks can run — SteamOS requires a
+          - password for sudo.
+        type: str
+        required: false
+        default: ''
+      steamdeck_sudo_secret_vault:
+        description:
+          - Vault the sudo password lives in. Required when
+          - steamdeck_sudo_secret_item is set.
+        type: str
+        required: false
+        default: ''
+      steamdeck_artwork_action:
+        description:
+          - backup pulls the device's grid artwork into steamdeck_artwork_dir's
+          - _device/ directory; restore pushes the tree's art back, keyed to each
+          - shortcut's CURRENT appid.
+          - Restore never overwrites a file already on the device.
+          - 'prune deletes ORPHANED non-Steam art: files named for a shortcut-range'
+          - appid (>= 2**31) that no shortcut in shortcuts.vdf has any more. Steam
+          - game art and unrecognised names are never touched. Preview unless
+          - steamdeck_apply; art not byte-identical to a vendored file is fetched
+          - to steamdeck_artwork_backup_dir first.
+        type: str
+        required: false
+        default: restore
+        choices:
+          - backup
+          - restore
+          - prune
+      steamdeck_artwork_dir:
+        description:
+          - CONTROLLER directory holding the tile artwork, one subdirectory per
+          - shortcut named slug(NAME), plus a MANIFEST.json recording which
+          - shortcut each set belongs to. Required by the artwork entrypoint
+          - '(every action: restore stages it, prune hashes it, backup writes'
+          - under its _device/). The artwork is the caller's data, not the
+          - "role's: tile art is usually third-party, so it is kept wherever the"
+          - caller keeps its own files and named here.
+        type: str
+        required: false
+        default: ''
+      steamdeck_artwork_backup_dir:
+        description:
+          - CONTROLLER directory that prune backs unvendored orphans up into,
+          - under <inventory_hostname>/<timestamp>/. Empty derives
+          - $HOME/.cache/iaac/steamdeck-grid-backup from the controller's
+          - 'environment. Deliberately outside steamdeck_artwork_dir: if that'
+          - tree is version-controlled, art parked inside it is one careless
+          - staging command from being committed.
+        type: str
+        required: false
+        default: ''
+      steamdeck_managed_shortcuts:
+        description:
+          - Non-Steam shortcuts to manage explicitly, as
+          - '{name, exe, start_dir, launch_options, icon, flatpak_app_id, adopt}.'
+          - '`adopt: true` claims an EXISTING entry of that name rather than'
+          - creating a second one — keeping its appid, which Steam uses to key
+          - artwork, controller layout and play time.
+          - Entries generated by another tool (EmuDeck's Steam ROM Manager) must
+          - 'NOT be declared here: SRM rewrites them whenever it runs, so both'
+          - would fight and SRM would win.
+        type: list
+        required: false
+        default: []
+        elements: dict
+      steamdeck_shortcut_owners:
+        description:
+          - Who owns the non-Steam shortcuts this role does NOT manage, as
+          - '{owner, exe_search}: an entry whose Exe matches the `exe_search` regex'
+          - (Python re.search) is reported as `no — owned by <owner>`; the first
+          - match wins. An untagged entry matching none is reported as
+          - '`no — origin unknown (not tagged by iaac)` — never as hand-made, which'
+          - 'the role cannot know. REPORTING ONLY: this changes no write; only the'
+          - "'iaac' tag decides what the role manages."
+          - The default recognises EmuDeck's Steam ROM Manager by its launcher
+          - directory, which is the one field SRM writes that is EmuDeck's own
+          - convention (its tags are the parser's category name, e.g. 'Emulation' or
+          - "'Nintendo Game Boy Advance', which a user can rename)."
+        type: list
+        required: false
+        default:
+          - owner: Steam ROM Manager (EmuDeck)
+            exe_search: /Emulation/tools/launchers/[^/]+[.]sh
+        elements: dict
+      steamdeck_stream_host:
+        description:
+          - Inventory name of the Sunshine host to build stream shortcuts for.
+          - EMPTY (the default) generates NO stream tiles, and the shortcuts merge
+          - then removes any it generated before — removal is by omission.
+          - SET THIS IN INVENTORY, not on the command line — it describes the
+          - network, and a value living only in shell history is not configuration.
+          - The tiles come from steamdeck_stream_apps.
+        type: str
+        required: false
+        default: ''
+      steamdeck_stream_apps:
+        description:
+          - "The streaming host's Sunshine apps, as a list of {name, ...}: one"
+          - stream tile per entry, named steamdeck_stream_prefix + name. Only
+          - "`name` is read. Point it at the list the host's own configuration"
+          - already declares rather than redeclaring it — two lists drift the
+          - first time an app is added on one side only.
+        type: list
+        required: false
+        default: []
+        elements: dict
+      steamdeck_stream_prefix:
+        description:
+          - Prefix for generated shortcut names, so streamed tiles are
+          - distinguishable from locally-installed games in the library.
+        type: str
+        required: false
+        default: 'Stream: '
+      steamdeck_steam_stop_wait:
+        description:
+          - Seconds to wait after stopping Steam before writing shortcuts.vdf.
+          - Steam flushes this file as it shuts down; writing too early loses the
+          - edit to Steam's own final write.
+        type: int
+        required: false
+        default: 8
+      steamdeck_moonlight_host:
+        description:
+          - Inventory hostname of a paired Moonlight host to pin by NAME,
+          - written to Moonlight's `manualaddress` and tried alongside discovery.
+          - 'USUALLY UNNECESSARY, and empty by default: a DHCP reservation is the'
+          - better fix for a wandering host, because it keeps every client correct
+          - rather than just this one. Use this only where a reservation cannot
+          - help — a NIC swap or a VLAN move, which change the key a reservation
+          - is written against.
+        type: str
+        required: false
+        default: ''
+      steamdeck_moonlight_fps:
+        description:
+          - Streaming frame rate. 0 leaves it untouched.
+          - The OLED Deck (Galileo) has a 90Hz panel and Moonlight defaults to 60,
+          - which quietly discards a third of the refresh rate.
+        type: int
+        required: false
+        default: 0
+      steamdeck_moonlight_bitrate:
+        description:
+          - Streaming bitrate in Kbps. 0 leaves it untouched.
+          - 30000 is Moonlight's default for this resolution and is aggressive for
+          - WiFi; the symptom of over-shooting is stutter that looks like a host
+          - problem.
+        type: int
+        required: false
+        default: 0
+      steamdeck_moonlight_hdr:
+        description:
+          - Enable HDR. Empty leaves it untouched.
+          - 'The OLED panel supports it. SET BOTH ENDS OR NEITHER: the host must'
+          - advertise a 10-bit profile (Sunshine's hevc_mode 3 rather than 2) AND
+          - have its compositor in HDR mode. A client asking for HDR against an
+          - 8-bit-only host negotiates down silently, which is hard to attribute
+          - later.
+          - NOTE this is Moonlight's GLOBAL default. Each paired app also carries its
+          - own hdr key, and a per-app false overrides this — so flipping the global
+          - alone can appear to do nothing.
+        type: str
+        required: false
+        default: ''
+        choices:
+          - ''
+          - 'true'
+          - 'false'

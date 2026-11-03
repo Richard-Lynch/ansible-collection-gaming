@@ -1,0 +1,72 @@
+---
+# ENTRYPOINT: update the server and re-download mods NOW, with the server stopped.
+#
+#   dst_action=update
+#   dst_action=update dst_apply=true
+#
+# A start already updates (dst_update_on_start), so this is for "patch it now, before anyone
+# tries to join", or to repair an install with dst_update_validate. REFUSED while running: it
+# would replace the binaries under the live shards.
+
+- name: Deployed, with the current image?
+  ansible.builtin.include_tasks: _assert_deployed.yml
+  vars:
+    _dst_require_image: true
+
+- name: Observe the cluster
+  ansible.builtin.include_tasks: _observe.yml
+
+- name: HARD GATE — the cluster must be stopped
+  ansible.builtin.assert:
+    that:
+      - _dst_obs.state == 'stopped'
+    fail_msg: >-
+      The cluster is {{ _dst_obs.state }}. Stop it first (dst_action=stop) — updating would replace
+      the server under the running shards.
+    quiet: true
+
+- name: Read the installed build
+  ansible.builtin.slurp:
+    src: "{{ _dst_dirs.server }}/version.txt"
+  register: _dst_build_before
+  failed_when: false
+
+- name: Report the plan
+  ansible.builtin.debug:
+    msg: >-
+      Installed build {{ (_dst_build_before.content | b64decode | trim) if _dst_build_before.content is defined else 'none' }}.
+      {{ 'UPDATING (steamcmd + mods, with a pre-update backup).' if dst_apply | bool
+         else 'Set dst_apply=true to update.' }}
+
+- name: Update
+  when: dst_apply | bool
+  block:
+    - name: Back up first
+      ansible.builtin.command:
+        argv: ["{{ _dst_dirs.bin }}/dst-backup.sh", pre-update]
+      changed_when: true
+
+    - name: Run prepare with the update forced
+      # The same script the prepare unit runs, so a manual update cannot differ from an automatic
+      # one; DST_FORCE_UPDATE overrides dst_update_on_start/dst_mods_update_on_start for this run
+      # only. DST_SKIP_BACKUP because the backup above already ran.
+      ansible.builtin.command:
+        argv: ["{{ _dst_dirs.bin }}/dst-prepare-host.sh"]
+      environment:
+        DST_FORCE_UPDATE: "1"
+        DST_SKIP_BACKUP: "1"
+      register: _dst_update_run
+      changed_when: true
+
+    - name: Read the build after
+      ansible.builtin.slurp:
+        src: "{{ _dst_dirs.server }}/version.txt"
+      register: _dst_build_after
+
+    - name: Report
+      ansible.builtin.debug:
+        msg:
+          - >-
+            Build {{ (_dst_build_before.content | b64decode | trim) if _dst_build_before.content is defined else 'none' }}
+            -> {{ _dst_build_after.content | b64decode | trim }}
+          - "{{ _dst_update_run.stdout_lines | select('search', 'dst-prepare:') | list }}"

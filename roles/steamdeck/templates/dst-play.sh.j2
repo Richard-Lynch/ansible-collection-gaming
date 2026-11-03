@@ -1,0 +1,212 @@
+#!/bin/bash
+# "Play DST on {{ steamdeck_dst_control_target }}": one tile press starts the server, launches Don't
+# Starve Together straight into it, and stops the server again when you quit — if nobody else is on.
+#
+# MANAGED BY ANSIBLE — roles/steamdeck/templates/dst-play.sh.j2. Edits here are overwritten.
+#
+#   iaac-dst-play.sh          what the tile runs: start the server (blocking), then hand off
+#   iaac-dst-play.sh run      the job itself (run it from a terminal to watch it)
+{#
+  WHY IT HANDS OFF. A tile is a "game" to Steam: Steam runs it under its `reaper`, which kills
+  everything the tile started when the tile exits — and Game Mode will not launch DST while the
+  tile is still "running". So the tile starts the job under the USER's systemd manager
+  (systemd-run --user), outside reaper's reach, and exits; the job waits for the tile to be gone
+  before launching DST.
+
+  WHY THE SERVER START HAPPENS IN THE TILE, NOT THE JOB. Handing off at once leaves the tile
+  "running" for ONE second, then nothing visible happens while a cold server takes a minute or
+  more to come up — so a user reasonably concludes it did nothing, launches DST by hand, and the
+  job, finding a game running when the server is finally up, gives up. So the tile BLOCKS on the
+  start: Steam shows it as running for exactly as long as the server takes, and DST appears the
+  moment the tile ends. If DST is nonetheless already running when the job is
+  ready (launched by hand), the job does not join but still stops the server when DST exits.
+
+  THE JOIN is DST's own launch arguments: `steam -applaunch 322330 +connect <ip>:<port> +password
+  <pw>`: it joins with NO Steam prompt, unattended. NEVER the steam://run/<appid>//<args>/ form: Steam asks "... is trying
+  to launch with custom options" EVERY time, and an unanswered prompt silently blocks every later
+  launch of DST. Success is judged by the SERVER counting a player (/healthz players >= 1), not by
+  anything the client logs. Replaced a one-shot join mod (c_connect at the main menu).
+
+  THE PASSWORD IS IN THE GAME'S LOGS, an accepted trade-off for a low-value join password. Two
+  exposures, both accepted:
+    (a) DST writes its command line, +password included, into client_log.txt and keeps copies
+        under backup/client_log/ — they persist after the game closes;
+    (b) it is in the argv of `steam` and of every game process (/proc/<pid>/cmdline), readable by
+        ANY local process on the Deck while DST runs.
+  It is the low-value join password of a LAN/online game server. The config file holding it stays
+  0600. IF IT EVER MATTERS, ROTATE IT: roll its item (steamdeck_dst_play_password_item), redeploy
+  the server with the new value, then re-run steamdeck_action=dst_play to reinstall the Deck's copy.
+
+  STOPPING ON QUIT. When DST exits, the job asks the server how many players remain. Only an
+  integer 0 — read twice, STOP_GRACE apart — stops it: a null count ("could not read") never counts
+  as empty, and someone playing on {{ steamdeck_dst_control_target }} itself keeps it up. Quitting
+  to DST's menu without exiting the game is not a disconnect this sees; the server's own idle
+  shutdown covers that.
+
+  Game Mode gives a tile no terminal; the log is the record of what a press did:
+    ~/.local/share/iaac-dst-play.log
+#}
+set -uo pipefail
+# Steam starts a tile with LD_PRELOAD=gameoverlayrenderer.so, which it injects into EVERY child
+# (tee, curl, sleep...). A `tee` in iaac-dst.sh holding Steam's IPC shared-memory fds can spin at
+# 100% CPU for minutes, so the server start never returns and the tile hangs "running" — and not
+# on every press, which makes it look intermittent.
+# Nothing here needs the overlay, so no child gets it; this also stops ld.so logging its
+# wrong-ELF-class complaint from systemd-run into this log.
+unset LD_PRELOAD
+
+CONF="${HOME}/.config/iaac/dst-play.env"
+DST_CTL="${HOME}/.local/bin/iaac-dst.sh"
+URL="{{ steamdeck_dst_control_url | regex_replace('/+$', '') }}"
+APPID=322330
+JOIN_WAIT={{ steamdeck_dst_play_join_timeout | int }}
+STOP_GRACE={{ steamdeck_dst_play_stop_grace | int }}
+
+LOG="${HOME}/.local/share/iaac-dst-play.log"
+mkdir -p "$(dirname "$LOG")"
+say() { printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$*" | tee -a "$LOG"; }
+
+# ------------------------------------------------- tile press: start the server, then hand off
+if [ "${1:-}" != run ]; then
+    say "=== press: starting the server (the tile shows as running until it is up)"
+    if [ ! -x "$DST_CTL" ]; then
+        say "FAILED: ${DST_CTL} missing — run steamdeck_action=dst_control"
+        exit 1
+    fi
+    if ! "$DST_CTL" start >/dev/null; then
+        say "FAILED: the server did not start (see iaac-dst.log)"
+        exit 1
+    fi
+    say "press: server is running"
+    unit="iaac-dst-play-$(date +%s)"
+    if systemd-run --user --collect --quiet --unit="$unit" "$0" run >>"$LOG" 2>&1; then
+        say "press: handed off to ${unit} (journalctl --user -u ${unit})"
+        exit 0
+    fi
+    say "FAILED: systemd-run --user could not start the job"
+    exit 1
+fi
+
+# ------------------------------------------------------------------------------ the job
+say "=== play: start"
+
+# shellcheck disable=SC1090  # path is fixed above; written by Ansible, 0600
+. "$CONF" 2>/dev/null || { say "FAILED: ${CONF} missing — run steamdeck_action=dst_play"; exit 1; }
+# Validated before use: they become launch arguments, so only shapes that cannot carry a second
+# argument or a Steam/console command (no spaces, no '+', no ';').
+[[ "${DST_PASSWORD:-}" =~ ^[A-Za-z0-9]+$ ]] || { say "FAILED: DST_PASSWORD in ${CONF} is not alphanumeric"; exit 1; }
+[[ "${DST_PORT:-}" =~ ^[0-9]+$ ]] || { say "FAILED: DST_PORT in ${CONF} is not a number"; exit 1; }
+[ -x "$DST_CTL" ] || { say "FAILED: ${DST_CTL} missing — run steamdeck_action=dst_control"; exit 1; }
+
+# +connect wants an address. Resolved here, at press time, because which address answers this
+# Deck is a property of the network it is on now.
+ip=$(python3 -c 'import socket,sys; print(socket.gethostbyname(sys.argv[1]))' "$DST_HOST" 2>/dev/null)
+[[ "$ip" =~ ^[0-9]+(\.[0-9]+){3}$ ]] || { say "FAILED: cannot resolve ${DST_HOST}"; exit 1; }
+
+# 1. The server: start and wait until every shard is listening (iaac-dst.sh; already up from the
+#    press, so normally "nothing to do").
+"$DST_CTL" start >/dev/null || { say "FAILED: the server did not start (see iaac-dst.log)"; exit 1; }
+say "server is running"
+
+# Is any process of DST running? By Steam's AppId env, which every descendant inherits (the
+# reaper alone is not the game). This job runs under the user manager, so it carries none itself.
+game_running() {
+    for e in /proc/[0-9]*/environ; do
+        # grep -z reads the NUL-separated file directly: no `tr | grep -q` pipe, which under
+        # pipefail can report a MATCH as failure when tr takes SIGPIPE.
+        if grep -qzx "SteamAppId=${APPID}" "$e" 2>/dev/null; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+# 2. Wait for the TILE to be gone: Game Mode runs one game at a time. DST already running means
+#    it was launched by hand while the server started — keep the stop-when-empty promise anyway.
+manual=0
+for _ in $(seq 1 30); do
+    if game_running; then manual=1; break; fi
+    pgrep -f '^[^ ]*/[r]eaper SteamLaunch AppId=' >/dev/null || break
+    sleep 1
+done
+if [ "$manual" -eq 1 ]; then
+    say "DST is already running (launched by hand) — not joining; the server stops when DST exits and it is empty"
+elif pgrep -f '^[^ ]*/[r]eaper SteamLaunch AppId=' >/dev/null; then
+    say "FAILED: another Steam game is still running — close it and press again"
+    exit 1
+fi
+
+# The server's own player count — the idle shutdown's input. A non-integer is "cannot tell".
+players() {
+    curl -sS -m 8 "${URL}/healthz" 2>/dev/null | python3 -c '
+import json, sys
+p = json.load(sys.stdin).get("players")
+print(p if isinstance(p, int) else "unknown")' 2>/dev/null || echo unknown
+}
+
+launch_and_join() {
+# 3. Launch DST through the running Steam client WITH the connect arguments. -applaunch, never a
+#    steam://run URL (see the header). `steam` hands the request to the client and returns.
+t0=$(date +%s)
+steam -applaunch "$APPID" +connect "${ip}:${DST_PORT}" +password "$DST_PASSWORD" >/dev/null 2>&1 &
+say "launched DST (steam -applaunch +connect ${ip}:${DST_PORT}); waiting up to ${JOIN_WAIT}s for the server to count a player"
+
+# 4. Joined = the SERVER counts a player. Someone already on it (on the host itself) would make this
+#    pass early, so the count must RISE above what it read before the launch.
+joined=0
+while [ $(( $(date +%s) - t0 )) -lt "$JOIN_WAIT" ]; do
+    sleep 5
+    p=$(players)
+    if [[ "$p" =~ ^[0-9]+$ ]] && [ "$p" -gt "$base" ]; then joined=1; break; fi
+done
+if [ "$joined" -ne 1 ]; then
+    say "NOT JOINED within ${JOIN_WAIT}s (server players=${p:-unknown}, ${base} before) — DST is left open; join from the server list."
+    return 1
+fi
+say "JOINED ${DST_HOST} (${ip}:${DST_PORT}): the server counts players=${p} ($(( $(date +%s) - t0 ))s after launch)."
+}
+if [ "$manual" -eq 0 ]; then
+    base=$(players)
+    [[ "$base" =~ ^[0-9]+$ ]] || base=0
+    # A failed join still falls through to the watch below: DST is open, and the stop-when-empty
+    # promise holds however the player got (or did not get) onto the server.
+    launch_and_join || true
+fi
+
+# 5. Wait for the player to quit DST — every process of the game gone.
+while game_running; do sleep 15; done
+say "DST has exited"
+
+# 6. Stop the server only if it is EMPTY, read twice STOP_GRACE apart (a quick rejoin, or someone
+#    on the host, keeps it up). A null count is "cannot tell", never empty.
+# The server does not drop a client the instant its game exits: read at the moment DST is gone,
+# it still counts this player (players=1). So first WAIT for 0, up to
+# DISCONNECT_WAIT; a count that never reaches 0 is someone else on it, and the server stays up.
+DISCONNECT_WAIT=180
+waited=0
+p1=$(players)
+while [ "$p1" != 0 ] && [ "$waited" -lt "$DISCONNECT_WAIT" ]; do
+    sleep 10
+    waited=$(( waited + 10 ))
+    p1=$(players)
+done
+if [ "$p1" != 0 ]; then
+    say "server still has players=${p1} ${DISCONNECT_WAIT}s after DST exited — someone else is on; leaving it up"
+    exit 0
+fi
+say "server reads 0 players (${waited}s after DST exited); confirming in ${STOP_GRACE}s"
+sleep "$STOP_GRACE"
+p2=$(players)
+if [ "$p2" != 0 ]; then
+    say "server has players=${p2} after ${STOP_GRACE}s — leaving it up"
+    exit 0
+fi
+say "server empty twice, ${STOP_GRACE}s apart — stopping it"
+# iaac-dst.sh logs to its own file; the outcome is recorded HERE too, so this log alone says what
+# a press did from start to finish.
+if "$DST_CTL" stop >/dev/null; then
+    say "DONE: server stopped (every shard saved)"
+else
+    say "FAILED: the stop did not complete (see iaac-dst.log)"
+    exit 1
+fi

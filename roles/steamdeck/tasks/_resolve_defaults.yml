@@ -1,0 +1,153 @@
+---
+# AUTO-GENERATED defaults resolver — DO NOT EDIT.
+#
+# Source of truth: roles/steamdeck/meta/argument_specs.py
+# Regenerate:      venv/bin/python tools/argspec/cli.py x generate steamdeck
+#
+# Edits here are silently overwritten on the next generation. To change a value or its
+# documentation, change the OptionSpec in the source file above — descriptions there
+# are emitted as the comments in this file.
+
+# Binds every declared option to its generated default, so a caller-supplied value
+# wins and an unsupplied one falls back rather than evaluating Undefined.
+#
+# Include this FIRST from every entrypoint:
+#   - ansible.builtin.include_tasks: _resolve_defaults.yml
+#
+# Role-specific setup logic belongs in tasks/setup_vars.yml, NOT here — this file is
+# overwritten on every generation.
+#
+# TWO BRANCHES, because `set_fact` persists for the whole play. A role invoked twice in
+# one play would otherwise see its OWN leftover facts on the second call, so a later
+# caller that omitted an option silently inherited the earlier caller's value instead of
+# the declared default. On a repeat call this ignores the role's own facts and rebinds
+# the defaults; an include-level `vars:` shadows the fact, so a value the caller DID
+# supply this time still wins. Roles called once per play only ever run the first branch.
+
+- name: Resolve declared options over their generated defaults
+  ansible.builtin.set_fact:
+    steamdeck_action: "{{ steamdeck_action | default(steamdeck_action__default) if steamdeck_action__default is defined else steamdeck_action | default(omit) }}"
+    steamdeck_apply: "{{ steamdeck_apply | default(steamdeck_apply__default) if steamdeck_apply__default is defined else steamdeck_apply | default(omit) }}"
+    steamdeck_probe_output: "{{ steamdeck_probe_output | default(steamdeck_probe_output__default) if steamdeck_probe_output__default is defined else steamdeck_probe_output | default(omit) }}"
+    steamdeck_remove_app: "{{ steamdeck_remove_app | default(steamdeck_remove_app__default) if steamdeck_remove_app__default is defined else steamdeck_remove_app | default(omit) }}"
+    steamdeck_remove_confirm: "{{ steamdeck_remove_confirm | default(steamdeck_remove_confirm__default) if steamdeck_remove_confirm__default is defined else steamdeck_remove_confirm | default(omit) }}"
+    steamdeck_remove_data: "{{ steamdeck_remove_data | default(steamdeck_remove_data__default) if steamdeck_remove_data__default is defined else steamdeck_remove_data | default(omit) }}"
+    steamdeck_helper_dir: "{{ steamdeck_helper_dir | default(steamdeck_helper_dir__default) if steamdeck_helper_dir__default is defined else steamdeck_helper_dir | default(omit) }}"
+    steamdeck_steam_userdir: "{{ steamdeck_steam_userdir | default(steamdeck_steam_userdir__default) if steamdeck_steam_userdir__default is defined else steamdeck_steam_userdir | default(omit) }}"
+    steamdeck_decky_settings_files: "{{ steamdeck_decky_settings_files | default(steamdeck_decky_settings_files__default) if steamdeck_decky_settings_files__default is defined else steamdeck_decky_settings_files | default(omit) }}"
+    steamdeck_decky_settings: "{{ steamdeck_decky_settings | default(steamdeck_decky_settings__default) if steamdeck_decky_settings__default is defined else steamdeck_decky_settings | default(omit) }}"
+    steamdeck_emudeck_settings: "{{ steamdeck_emudeck_settings | default(steamdeck_emudeck_settings__default) if steamdeck_emudeck_settings__default is defined else steamdeck_emudeck_settings | default(omit) }}"
+    steamdeck_emudeck_secrets: "{{ steamdeck_emudeck_secrets | default(steamdeck_emudeck_secrets__default) if steamdeck_emudeck_secrets__default is defined else steamdeck_emudeck_secrets | default(omit) }}"
+    steamdeck_css_themes: "{{ steamdeck_css_themes | default(steamdeck_css_themes__default) if steamdeck_css_themes__default is defined else steamdeck_css_themes | default(omit) }}"
+    steamdeck_css_remove: "{{ steamdeck_css_remove | default(steamdeck_css_remove__default) if steamdeck_css_remove__default is defined else steamdeck_css_remove | default(omit) }}"
+    steamdeck_decky_remove: "{{ steamdeck_decky_remove | default(steamdeck_decky_remove__default) if steamdeck_decky_remove__default is defined else steamdeck_decky_remove | default(omit) }}"
+    steamdeck_battery_limit: "{{ steamdeck_battery_limit | default(steamdeck_battery_limit__default) if steamdeck_battery_limit__default is defined else steamdeck_battery_limit | default(omit) }}"
+    steamdeck_battery_unit: "{{ steamdeck_battery_unit | default(steamdeck_battery_unit__default) if steamdeck_battery_unit__default is defined else steamdeck_battery_unit | default(omit) }}"
+    steamdeck_close_game_timeout: "{{ steamdeck_close_game_timeout | default(steamdeck_close_game_timeout__default) if steamdeck_close_game_timeout__default is defined else steamdeck_close_game_timeout | default(omit) }}"
+    steamdeck_reboot_confirm: "{{ steamdeck_reboot_confirm | default(steamdeck_reboot_confirm__default) if steamdeck_reboot_confirm__default is defined else steamdeck_reboot_confirm | default(omit) }}"
+    steamdeck_reboot_timeout: "{{ steamdeck_reboot_timeout | default(steamdeck_reboot_timeout__default) if steamdeck_reboot_timeout__default is defined else steamdeck_reboot_timeout | default(omit) }}"
+    steamdeck_wol_udev_rule: "{{ steamdeck_wol_udev_rule | default(steamdeck_wol_udev_rule__default) if steamdeck_wol_udev_rule__default is defined else steamdeck_wol_udev_rule | default(omit) }}"
+    steamdeck_wol_unit: "{{ steamdeck_wol_unit | default(steamdeck_wol_unit__default) if steamdeck_wol_unit__default is defined else steamdeck_wol_unit | default(omit) }}"
+    steamdeck_wake_target: "{{ steamdeck_wake_target | default(steamdeck_wake_target__default) if steamdeck_wake_target__default is defined else steamdeck_wake_target | default(omit) }}"
+    steamdeck_wake_mac: "{{ steamdeck_wake_mac | default(steamdeck_wake_mac__default) if steamdeck_wake_mac__default is defined else steamdeck_wake_mac | default(omit) }}"
+    steamdeck_wake_broadcast: "{{ steamdeck_wake_broadcast | default(steamdeck_wake_broadcast__default) if steamdeck_wake_broadcast__default is defined else steamdeck_wake_broadcast | default(omit) }}"
+    steamdeck_wake_port: "{{ steamdeck_wake_port | default(steamdeck_wake_port__default) if steamdeck_wake_port__default is defined else steamdeck_wake_port | default(omit) }}"
+    steamdeck_wake_probe_host: "{{ steamdeck_wake_probe_host | default(steamdeck_wake_probe_host__default) if steamdeck_wake_probe_host__default is defined else steamdeck_wake_probe_host | default(omit) }}"
+    steamdeck_wake_probe_port: "{{ steamdeck_wake_probe_port | default(steamdeck_wake_probe_port__default) if steamdeck_wake_probe_port__default is defined else steamdeck_wake_probe_port | default(omit) }}"
+    steamdeck_steam_guard_url: "{{ steamdeck_steam_guard_url | default(steamdeck_steam_guard_url__default) if steamdeck_steam_guard_url__default is defined else steamdeck_steam_guard_url | default(omit) }}"
+    steamdeck_steam_guard_target: "{{ steamdeck_steam_guard_target | default(steamdeck_steam_guard_target__default) if steamdeck_steam_guard_target__default is defined else steamdeck_steam_guard_target | default(omit) }}"
+    steamdeck_steam_guard_timeout: "{{ steamdeck_steam_guard_timeout | default(steamdeck_steam_guard_timeout__default) if steamdeck_steam_guard_timeout__default is defined else steamdeck_steam_guard_timeout | default(omit) }}"
+    steamdeck_dst_control_url: "{{ steamdeck_dst_control_url | default(steamdeck_dst_control_url__default) if steamdeck_dst_control_url__default is defined else steamdeck_dst_control_url | default(omit) }}"
+    steamdeck_dst_control_target: "{{ steamdeck_dst_control_target | default(steamdeck_dst_control_target__default) if steamdeck_dst_control_target__default is defined else steamdeck_dst_control_target | default(omit) }}"
+    steamdeck_dst_start_timeout: "{{ steamdeck_dst_start_timeout | default(steamdeck_dst_start_timeout__default) if steamdeck_dst_start_timeout__default is defined else steamdeck_dst_start_timeout | default(omit) }}"
+    steamdeck_dst_play_host: "{{ steamdeck_dst_play_host | default(steamdeck_dst_play_host__default) if steamdeck_dst_play_host__default is defined else steamdeck_dst_play_host | default(omit) }}"
+    steamdeck_dst_play_port: "{{ steamdeck_dst_play_port | default(steamdeck_dst_play_port__default) if steamdeck_dst_play_port__default is defined else steamdeck_dst_play_port | default(omit) }}"
+    steamdeck_dst_play_password_item: "{{ steamdeck_dst_play_password_item | default(steamdeck_dst_play_password_item__default) if steamdeck_dst_play_password_item__default is defined else steamdeck_dst_play_password_item | default(omit) }}"
+    steamdeck_dst_play_password_field: "{{ steamdeck_dst_play_password_field | default(steamdeck_dst_play_password_field__default) if steamdeck_dst_play_password_field__default is defined else steamdeck_dst_play_password_field | default(omit) }}"
+    steamdeck_dst_play_secret_vault: "{{ steamdeck_dst_play_secret_vault | default(steamdeck_dst_play_secret_vault__default) if steamdeck_dst_play_secret_vault__default is defined else steamdeck_dst_play_secret_vault | default(omit) }}"
+    steamdeck_dst_play_join_timeout: "{{ steamdeck_dst_play_join_timeout | default(steamdeck_dst_play_join_timeout__default) if steamdeck_dst_play_join_timeout__default is defined else steamdeck_dst_play_join_timeout | default(omit) }}"
+    steamdeck_dst_play_stop_grace: "{{ steamdeck_dst_play_stop_grace | default(steamdeck_dst_play_stop_grace__default) if steamdeck_dst_play_stop_grace__default is defined else steamdeck_dst_play_stop_grace | default(omit) }}"
+    steamdeck_wake_timeout: "{{ steamdeck_wake_timeout | default(steamdeck_wake_timeout__default) if steamdeck_wake_timeout__default is defined else steamdeck_wake_timeout | default(omit) }}"
+    steamdeck_wake_endpoint: "{{ steamdeck_wake_endpoint | default(steamdeck_wake_endpoint__default) if steamdeck_wake_endpoint__default is defined else steamdeck_wake_endpoint | default(omit) }}"
+    steamdeck_sudo_secret_item: "{{ steamdeck_sudo_secret_item | default(steamdeck_sudo_secret_item__default) if steamdeck_sudo_secret_item__default is defined else steamdeck_sudo_secret_item | default(omit) }}"
+    steamdeck_sudo_secret_vault: "{{ steamdeck_sudo_secret_vault | default(steamdeck_sudo_secret_vault__default) if steamdeck_sudo_secret_vault__default is defined else steamdeck_sudo_secret_vault | default(omit) }}"
+    steamdeck_artwork_action: "{{ steamdeck_artwork_action | default(steamdeck_artwork_action__default) if steamdeck_artwork_action__default is defined else steamdeck_artwork_action | default(omit) }}"
+    steamdeck_artwork_dir: "{{ steamdeck_artwork_dir | default(steamdeck_artwork_dir__default) if steamdeck_artwork_dir__default is defined else steamdeck_artwork_dir | default(omit) }}"
+    steamdeck_artwork_backup_dir: "{{ steamdeck_artwork_backup_dir | default(steamdeck_artwork_backup_dir__default) if steamdeck_artwork_backup_dir__default is defined else steamdeck_artwork_backup_dir | default(omit) }}"
+    steamdeck_managed_shortcuts: "{{ steamdeck_managed_shortcuts | default(steamdeck_managed_shortcuts__default) if steamdeck_managed_shortcuts__default is defined else steamdeck_managed_shortcuts | default(omit) }}"
+    steamdeck_shortcut_owners: "{{ steamdeck_shortcut_owners | default(steamdeck_shortcut_owners__default) if steamdeck_shortcut_owners__default is defined else steamdeck_shortcut_owners | default(omit) }}"
+    steamdeck_stream_host: "{{ steamdeck_stream_host | default(steamdeck_stream_host__default) if steamdeck_stream_host__default is defined else steamdeck_stream_host | default(omit) }}"
+    steamdeck_stream_apps: "{{ steamdeck_stream_apps | default(steamdeck_stream_apps__default) if steamdeck_stream_apps__default is defined else steamdeck_stream_apps | default(omit) }}"
+    steamdeck_stream_prefix: "{{ steamdeck_stream_prefix | default(steamdeck_stream_prefix__default) if steamdeck_stream_prefix__default is defined else steamdeck_stream_prefix | default(omit) }}"
+    steamdeck_steam_stop_wait: "{{ steamdeck_steam_stop_wait | default(steamdeck_steam_stop_wait__default) if steamdeck_steam_stop_wait__default is defined else steamdeck_steam_stop_wait | default(omit) }}"
+    steamdeck_moonlight_host: "{{ steamdeck_moonlight_host | default(steamdeck_moonlight_host__default) if steamdeck_moonlight_host__default is defined else steamdeck_moonlight_host | default(omit) }}"
+    steamdeck_moonlight_fps: "{{ steamdeck_moonlight_fps | default(steamdeck_moonlight_fps__default) if steamdeck_moonlight_fps__default is defined else steamdeck_moonlight_fps | default(omit) }}"
+    steamdeck_moonlight_bitrate: "{{ steamdeck_moonlight_bitrate | default(steamdeck_moonlight_bitrate__default) if steamdeck_moonlight_bitrate__default is defined else steamdeck_moonlight_bitrate | default(omit) }}"
+    steamdeck_moonlight_hdr: "{{ steamdeck_moonlight_hdr | default(steamdeck_moonlight_hdr__default) if steamdeck_moonlight_hdr__default is defined else steamdeck_moonlight_hdr | default(omit) }}"
+  when: not (_steamdeck__argspec_resolved | default(false))
+
+- name: Rebind the defaults on a repeat call, ignoring this role's own leftover facts
+  ansible.builtin.set_fact:
+    steamdeck_action: "{{ steamdeck_action__default if steamdeck_action__default is defined else steamdeck_action | default(omit) }}"
+    steamdeck_apply: "{{ steamdeck_apply__default if steamdeck_apply__default is defined else steamdeck_apply | default(omit) }}"
+    steamdeck_probe_output: "{{ steamdeck_probe_output__default if steamdeck_probe_output__default is defined else steamdeck_probe_output | default(omit) }}"
+    steamdeck_remove_app: "{{ steamdeck_remove_app__default if steamdeck_remove_app__default is defined else steamdeck_remove_app | default(omit) }}"
+    steamdeck_remove_confirm: "{{ steamdeck_remove_confirm__default if steamdeck_remove_confirm__default is defined else steamdeck_remove_confirm | default(omit) }}"
+    steamdeck_remove_data: "{{ steamdeck_remove_data__default if steamdeck_remove_data__default is defined else steamdeck_remove_data | default(omit) }}"
+    steamdeck_helper_dir: "{{ steamdeck_helper_dir__default if steamdeck_helper_dir__default is defined else steamdeck_helper_dir | default(omit) }}"
+    steamdeck_steam_userdir: "{{ steamdeck_steam_userdir__default if steamdeck_steam_userdir__default is defined else steamdeck_steam_userdir | default(omit) }}"
+    steamdeck_decky_settings_files: "{{ steamdeck_decky_settings_files__default if steamdeck_decky_settings_files__default is defined else steamdeck_decky_settings_files | default(omit) }}"
+    steamdeck_decky_settings: "{{ steamdeck_decky_settings__default if steamdeck_decky_settings__default is defined else steamdeck_decky_settings | default(omit) }}"
+    steamdeck_emudeck_settings: "{{ steamdeck_emudeck_settings__default if steamdeck_emudeck_settings__default is defined else steamdeck_emudeck_settings | default(omit) }}"
+    steamdeck_emudeck_secrets: "{{ steamdeck_emudeck_secrets__default if steamdeck_emudeck_secrets__default is defined else steamdeck_emudeck_secrets | default(omit) }}"
+    steamdeck_css_themes: "{{ steamdeck_css_themes__default if steamdeck_css_themes__default is defined else steamdeck_css_themes | default(omit) }}"
+    steamdeck_css_remove: "{{ steamdeck_css_remove__default if steamdeck_css_remove__default is defined else steamdeck_css_remove | default(omit) }}"
+    steamdeck_decky_remove: "{{ steamdeck_decky_remove__default if steamdeck_decky_remove__default is defined else steamdeck_decky_remove | default(omit) }}"
+    steamdeck_battery_limit: "{{ steamdeck_battery_limit__default if steamdeck_battery_limit__default is defined else steamdeck_battery_limit | default(omit) }}"
+    steamdeck_battery_unit: "{{ steamdeck_battery_unit__default if steamdeck_battery_unit__default is defined else steamdeck_battery_unit | default(omit) }}"
+    steamdeck_close_game_timeout: "{{ steamdeck_close_game_timeout__default if steamdeck_close_game_timeout__default is defined else steamdeck_close_game_timeout | default(omit) }}"
+    steamdeck_reboot_confirm: "{{ steamdeck_reboot_confirm__default if steamdeck_reboot_confirm__default is defined else steamdeck_reboot_confirm | default(omit) }}"
+    steamdeck_reboot_timeout: "{{ steamdeck_reboot_timeout__default if steamdeck_reboot_timeout__default is defined else steamdeck_reboot_timeout | default(omit) }}"
+    steamdeck_wol_udev_rule: "{{ steamdeck_wol_udev_rule__default if steamdeck_wol_udev_rule__default is defined else steamdeck_wol_udev_rule | default(omit) }}"
+    steamdeck_wol_unit: "{{ steamdeck_wol_unit__default if steamdeck_wol_unit__default is defined else steamdeck_wol_unit | default(omit) }}"
+    steamdeck_wake_target: "{{ steamdeck_wake_target__default if steamdeck_wake_target__default is defined else steamdeck_wake_target | default(omit) }}"
+    steamdeck_wake_mac: "{{ steamdeck_wake_mac__default if steamdeck_wake_mac__default is defined else steamdeck_wake_mac | default(omit) }}"
+    steamdeck_wake_broadcast: "{{ steamdeck_wake_broadcast__default if steamdeck_wake_broadcast__default is defined else steamdeck_wake_broadcast | default(omit) }}"
+    steamdeck_wake_port: "{{ steamdeck_wake_port__default if steamdeck_wake_port__default is defined else steamdeck_wake_port | default(omit) }}"
+    steamdeck_wake_probe_host: "{{ steamdeck_wake_probe_host__default if steamdeck_wake_probe_host__default is defined else steamdeck_wake_probe_host | default(omit) }}"
+    steamdeck_wake_probe_port: "{{ steamdeck_wake_probe_port__default if steamdeck_wake_probe_port__default is defined else steamdeck_wake_probe_port | default(omit) }}"
+    steamdeck_steam_guard_url: "{{ steamdeck_steam_guard_url__default if steamdeck_steam_guard_url__default is defined else steamdeck_steam_guard_url | default(omit) }}"
+    steamdeck_steam_guard_target: "{{ steamdeck_steam_guard_target__default if steamdeck_steam_guard_target__default is defined else steamdeck_steam_guard_target | default(omit) }}"
+    steamdeck_steam_guard_timeout: "{{ steamdeck_steam_guard_timeout__default if steamdeck_steam_guard_timeout__default is defined else steamdeck_steam_guard_timeout | default(omit) }}"
+    steamdeck_dst_control_url: "{{ steamdeck_dst_control_url__default if steamdeck_dst_control_url__default is defined else steamdeck_dst_control_url | default(omit) }}"
+    steamdeck_dst_control_target: "{{ steamdeck_dst_control_target__default if steamdeck_dst_control_target__default is defined else steamdeck_dst_control_target | default(omit) }}"
+    steamdeck_dst_start_timeout: "{{ steamdeck_dst_start_timeout__default if steamdeck_dst_start_timeout__default is defined else steamdeck_dst_start_timeout | default(omit) }}"
+    steamdeck_dst_play_host: "{{ steamdeck_dst_play_host__default if steamdeck_dst_play_host__default is defined else steamdeck_dst_play_host | default(omit) }}"
+    steamdeck_dst_play_port: "{{ steamdeck_dst_play_port__default if steamdeck_dst_play_port__default is defined else steamdeck_dst_play_port | default(omit) }}"
+    steamdeck_dst_play_password_item: "{{ steamdeck_dst_play_password_item__default if steamdeck_dst_play_password_item__default is defined else steamdeck_dst_play_password_item | default(omit) }}"
+    steamdeck_dst_play_password_field: "{{ steamdeck_dst_play_password_field__default if steamdeck_dst_play_password_field__default is defined else steamdeck_dst_play_password_field | default(omit) }}"
+    steamdeck_dst_play_secret_vault: "{{ steamdeck_dst_play_secret_vault__default if steamdeck_dst_play_secret_vault__default is defined else steamdeck_dst_play_secret_vault | default(omit) }}"
+    steamdeck_dst_play_join_timeout: "{{ steamdeck_dst_play_join_timeout__default if steamdeck_dst_play_join_timeout__default is defined else steamdeck_dst_play_join_timeout | default(omit) }}"
+    steamdeck_dst_play_stop_grace: "{{ steamdeck_dst_play_stop_grace__default if steamdeck_dst_play_stop_grace__default is defined else steamdeck_dst_play_stop_grace | default(omit) }}"
+    steamdeck_wake_timeout: "{{ steamdeck_wake_timeout__default if steamdeck_wake_timeout__default is defined else steamdeck_wake_timeout | default(omit) }}"
+    steamdeck_wake_endpoint: "{{ steamdeck_wake_endpoint__default if steamdeck_wake_endpoint__default is defined else steamdeck_wake_endpoint | default(omit) }}"
+    steamdeck_sudo_secret_item: "{{ steamdeck_sudo_secret_item__default if steamdeck_sudo_secret_item__default is defined else steamdeck_sudo_secret_item | default(omit) }}"
+    steamdeck_sudo_secret_vault: "{{ steamdeck_sudo_secret_vault__default if steamdeck_sudo_secret_vault__default is defined else steamdeck_sudo_secret_vault | default(omit) }}"
+    steamdeck_artwork_action: "{{ steamdeck_artwork_action__default if steamdeck_artwork_action__default is defined else steamdeck_artwork_action | default(omit) }}"
+    steamdeck_artwork_dir: "{{ steamdeck_artwork_dir__default if steamdeck_artwork_dir__default is defined else steamdeck_artwork_dir | default(omit) }}"
+    steamdeck_artwork_backup_dir: "{{ steamdeck_artwork_backup_dir__default if steamdeck_artwork_backup_dir__default is defined else steamdeck_artwork_backup_dir | default(omit) }}"
+    steamdeck_managed_shortcuts: "{{ steamdeck_managed_shortcuts__default if steamdeck_managed_shortcuts__default is defined else steamdeck_managed_shortcuts | default(omit) }}"
+    steamdeck_shortcut_owners: "{{ steamdeck_shortcut_owners__default if steamdeck_shortcut_owners__default is defined else steamdeck_shortcut_owners | default(omit) }}"
+    steamdeck_stream_host: "{{ steamdeck_stream_host__default if steamdeck_stream_host__default is defined else steamdeck_stream_host | default(omit) }}"
+    steamdeck_stream_apps: "{{ steamdeck_stream_apps__default if steamdeck_stream_apps__default is defined else steamdeck_stream_apps | default(omit) }}"
+    steamdeck_stream_prefix: "{{ steamdeck_stream_prefix__default if steamdeck_stream_prefix__default is defined else steamdeck_stream_prefix | default(omit) }}"
+    steamdeck_steam_stop_wait: "{{ steamdeck_steam_stop_wait__default if steamdeck_steam_stop_wait__default is defined else steamdeck_steam_stop_wait | default(omit) }}"
+    steamdeck_moonlight_host: "{{ steamdeck_moonlight_host__default if steamdeck_moonlight_host__default is defined else steamdeck_moonlight_host | default(omit) }}"
+    steamdeck_moonlight_fps: "{{ steamdeck_moonlight_fps__default if steamdeck_moonlight_fps__default is defined else steamdeck_moonlight_fps | default(omit) }}"
+    steamdeck_moonlight_bitrate: "{{ steamdeck_moonlight_bitrate__default if steamdeck_moonlight_bitrate__default is defined else steamdeck_moonlight_bitrate | default(omit) }}"
+    steamdeck_moonlight_hdr: "{{ steamdeck_moonlight_hdr__default if steamdeck_moonlight_hdr__default is defined else steamdeck_moonlight_hdr | default(omit) }}"
+  when: _steamdeck__argspec_resolved | default(false)
+
+- name: Record that this role has resolved its options in this play
+  ansible.builtin.set_fact:
+    _steamdeck__argspec_resolved: true

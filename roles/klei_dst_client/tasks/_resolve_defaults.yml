@@ -1,0 +1,45 @@
+---
+# AUTO-GENERATED defaults resolver — DO NOT EDIT.
+#
+# Source of truth: roles/klei_dst_client/meta/argument_specs.py
+# Regenerate:      venv/bin/python tools/argspec/cli.py x generate klei_dst_client
+#
+# Edits here are silently overwritten on the next generation. To change a value or its
+# documentation, change the OptionSpec in the source file above — descriptions there
+# are emitted as the comments in this file.
+
+# Binds every declared option to its generated default, so a caller-supplied value
+# wins and an unsupplied one falls back rather than evaluating Undefined.
+#
+# Include this FIRST from every entrypoint:
+#   - ansible.builtin.include_tasks: _resolve_defaults.yml
+#
+# Role-specific setup logic belongs in tasks/setup_vars.yml, NOT here — this file is
+# overwritten on every generation.
+#
+# TWO BRANCHES, because `set_fact` persists for the whole play. A role invoked twice in
+# one play would otherwise see its OWN leftover facts on the second call, so a later
+# caller that omitted an option silently inherited the earlier caller's value instead of
+# the declared default. On a repeat call this ignores the role's own facts and rebinds
+# the defaults; an include-level `vars:` shadows the fact, so a value the caller DID
+# supply this time still wins. Roles called once per play only ever run the first branch.
+
+- name: Resolve declared options over their generated defaults
+  ansible.builtin.set_fact:
+    klei_dst_client_apply: "{{ klei_dst_client_apply | default(klei_dst_client_apply__default) if klei_dst_client_apply__default is defined else klei_dst_client_apply | default(omit) }}"
+    klei_dst_client_mods: "{{ klei_dst_client_mods | default(klei_dst_client_mods__default) if klei_dst_client_mods__default is defined else klei_dst_client_mods | default(omit) }}"
+    klei_dst_client_home: "{{ klei_dst_client_home | default(klei_dst_client_home__default) if klei_dst_client_home__default is defined else klei_dst_client_home | default(omit) }}"
+    klei_dst_client_python: "{{ klei_dst_client_python | default(klei_dst_client_python__default) if klei_dst_client_python__default is defined else klei_dst_client_python | default(omit) }}"
+  when: not (_klei_dst_client__argspec_resolved | default(false))
+
+- name: Rebind the defaults on a repeat call, ignoring this role's own leftover facts
+  ansible.builtin.set_fact:
+    klei_dst_client_apply: "{{ klei_dst_client_apply__default if klei_dst_client_apply__default is defined else klei_dst_client_apply | default(omit) }}"
+    klei_dst_client_mods: "{{ klei_dst_client_mods__default if klei_dst_client_mods__default is defined else klei_dst_client_mods | default(omit) }}"
+    klei_dst_client_home: "{{ klei_dst_client_home__default if klei_dst_client_home__default is defined else klei_dst_client_home | default(omit) }}"
+    klei_dst_client_python: "{{ klei_dst_client_python__default if klei_dst_client_python__default is defined else klei_dst_client_python | default(omit) }}"
+  when: _klei_dst_client__argspec_resolved | default(false)
+
+- name: Record that this role has resolved its options in this play
+  ansible.builtin.set_fact:
+    _klei_dst_client__argspec_resolved: true

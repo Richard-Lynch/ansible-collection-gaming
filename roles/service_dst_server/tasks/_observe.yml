@@ -1,0 +1,21 @@
+---
+# Read the cluster's live state through the SAME code the control endpoint uses
+# (dst_control.py --once), so a play and a Deck tile can never disagree about whether the server
+# is up. Sets _dst_obs.
+#
+# Requires a deploy (the script and its control.json live on the host). Read-only.
+
+- name: Observe the cluster (dst_control.py --once)
+  ansible.builtin.command:
+    argv:
+      - "{{ dst_python }}"
+      - "{{ _dst_dirs.bin }}/dst_control.py"
+      - --config
+      - "{{ _dst_dirs.state }}/control.json"
+      - --once
+  register: _dst_obs_raw
+  changed_when: false
+
+- name: Parse the observation
+  ansible.builtin.set_fact:
+    _dst_obs: "{{ _dst_obs_raw.stdout | from_json }}"

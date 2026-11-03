@@ -1,0 +1,76 @@
+---
+# A fixture "release": fixture-v1.0.0.zip with Decky's layout (one top-level directory), and a
+# fixture home where Decky is "installed" (homebrew/plugins exists) and an OLDER install of the
+# plugin left a file the new archive no longer has, plus a byte cache the backend wrote.
+- name: Prepare
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _root: /tmp/molecule-decky-plugin
+  tasks:
+    - name: Start clean
+      ansible.builtin.file:
+        path: "{{ _root }}"
+        state: absent
+
+    - name: Fixture directories
+      ansible.builtin.file:
+        path: "{{ _root }}/{{ item }}"
+        state: directory
+        mode: "0755"
+      loop:
+        - src/fixture/dist
+        - src/fixture/py_modules/fixturecfg
+        - home/homebrew/plugins/fixture/py_modules/fixturecfg/__pycache__
+
+    - name: Fixture source tree
+      ansible.builtin.copy:
+        dest: "{{ _root }}/src/fixture/{{ item.path }}"
+        content: "{{ item.content }}"
+        mode: "0644"
+      loop:
+        - path: plugin.json
+          content: '{"name": "Fixture", "author": "molecule", "flags": [], "api_version": 1}'
+        - path: package.json
+          content: '{"name": "fixture", "version": "1.0.0", "type": "module"}'
+        - path: main.py
+          content: "class Plugin:\n    async def _main(self):\n        pass\n"
+        - path: dist/index.js
+          content: "export default function () {}\n"
+        - path: py_modules/fixturecfg/__init__.py
+          content: |
+            import json
+            def load(path):
+                doc = json.load(open(path))
+                errors = {k: "no '%s' section" % k for k in ("dst", "wake") if k not in doc}
+                if not isinstance(doc.get("dst", {}).get("timeout_s", 0), int):
+                    errors["dst"] = "dst.timeout_s must be a number"
+                return {"errors": errors}, None
+      loop_control:
+        label: "{{ item.path }}"
+
+    - name: Zip it the way the release workflow does (top-level fixture/)
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -c
+          - |
+            import os, sys, zipfile
+            src, out = sys.argv[1], sys.argv[2]
+            with zipfile.ZipFile(out, "w") as zf:
+                for d, _, fs in sorted(os.walk(os.path.join(src, "fixture"))):
+                    for f in sorted(fs):
+                        p = os.path.join(d, f)
+                        zf.write(p, os.path.relpath(p, src))
+          - "{{ _root }}/src"
+          - "{{ _root }}/fixture-v1.0.0.zip"
+        creates: "{{ _root }}/fixture-v1.0.0.zip"
+
+    - name: Decky is "installed", with an older copy of the plugin
+      ansible.builtin.copy:
+        dest: "{{ _root }}/home/homebrew/plugins/fixture/{{ item }}"
+        content: "stale\n"
+        mode: "0644"
+      loop:
+        - old.js # not in the archive: must be REMOVED
+        - py_modules/fixturecfg/__pycache__/__init__.cpython-312.pyc # byte cache: must be KEPT

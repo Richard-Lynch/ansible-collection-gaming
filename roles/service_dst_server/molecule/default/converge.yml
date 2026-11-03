@@ -1,0 +1,312 @@
+# Drive the REAL role code against fixtures — see molecule.yml for scope.
+#
+# Every option is passed at INCLUDE level (the `*base` anchor), never as play vars: the generated
+# resolver rebinds a repeat call to the declared defaults, so a play-level value would silently
+# apply only to the first include (RESOLVE-01's re-entry branch, working as designed).
+---
+- name: Converge
+  hosts: localhost
+  gather_facts: true
+
+  vars:
+    _root: /tmp/molecule-service-dst-server
+    _base: &base
+      dst_action: deploy
+      dst_apply: true
+      dst_root: /tmp/molecule-service-dst-server
+      dst_cluster_name: Molecule Den
+      dst_cluster_description: "a description with = and ; in it"
+      dst_offline: true
+      dst_lan_only: true
+      dst_max_players: 8
+      dst_tick_rate: 30
+      dst_steam_group_id: 0
+      dst_admins: [KU_aaaa1111, KU_bbbb2222]
+      dst_blocklist: []
+      dst_control_allow: [192.0.2.4]
+      dst_cluster_ini_extra:
+        MISC:
+          max_snapshots: 9
+        NETWORK:
+          extra_key: kept
+      dst_shards:
+        - name: Master
+          is_master: true
+          server_port: 10999
+          master_server_port: 27016
+          authentication_port: 8766
+          worldgen_preset: SURVIVAL_TOGETHER
+          worldgen_overrides:
+            season_start: autumn
+            world_size: huge
+        - name: Caves
+          server_port: 11000
+          master_server_port: 27017
+          authentication_port: 8767
+          worldgen_preset: DST_CAVE
+          server_ini_extra:
+            NETWORK:
+              tick_rate_note: caves
+        - name: Lab
+          enabled: false
+          server_port: 11001
+          master_server_port: 27018
+          authentication_port: 8768
+          leveldata_override:
+            id: CUSTOM
+            overrides:
+              wormhole_prefab: tentacle_pillar
+      dst_mods:
+        - id: "378160973"
+          name: Global Positions
+          config:
+            SHOWPLAYERICONS: true
+            "Starting Items": default
+            radius: 1.5
+        - id: workshop-666155465
+          name: Show Me
+        - id: "1111"
+          name: Parked
+          enabled: false
+          config:
+            x: 1
+        - id: "2222"
+          name: Master only
+          shards: [Master]
+      dst_mod_collections: ["9999"]
+
+  tasks:
+    - name: Run the role's pure-logic test suites
+      # Stdlib-only; run here as well so a molecule run proves them too.
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/../../files/{{ item }}"]
+      loop: [test_dst_control.py, test_dst_mods_report.py]
+      changed_when: false
+
+    - name: Run the INI/Lua renderers' test suite
+      # The renderers are collection filters (plugins/filter/dst_formats.py); their suite sits in
+      # the collection's tests/unit/.
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/../../../../tests/unit/test_dst_formats.py"
+      changed_when: false
+
+    - name: Start from an empty root
+      # Only on the FIRST converge: molecule's idempotence step re-runs this play and requires
+      # zero changes, which a wipe would defeat. The marker is written at the very end.
+      ansible.builtin.stat:
+        path: "{{ _root }}/.molecule-converged"
+      register: _marker
+
+    - name: Wipe the scenario root
+      ansible.builtin.file:
+        path: "{{ _root }}"
+        state: absent
+      when: not _marker.stat.exists
+
+    # ------------------------------------------------------------------ the gates FAIL when wrong
+    - name: Two masters must be refused
+      block:
+        - name: Include the resolver with two masters
+          ansible.builtin.include_role:
+            name: service_dst_server
+            tasks_from: setup_vars
+          vars:
+            <<: *base
+            dst_shards:
+              - name: Master
+                is_master: true
+                server_port: 10999
+                master_server_port: 27016
+                authentication_port: 8766
+              - name: Other
+                is_master: true
+                server_port: 11000
+                master_server_port: 27017
+                authentication_port: 8767
+        - name: Should not get here
+          ansible.builtin.fail:
+            msg: two masters were ACCEPTED
+      rescue:
+        - name: Refused as required
+          ansible.builtin.assert:
+            that:
+              [
+                "'dst_shards is not a valid cluster' in ansible_failed_result.msg",
+              ]
+            quiet: true
+
+    - name: A port shared by two shards must be refused
+      block:
+        - name: Include the resolver with a duplicate port
+          ansible.builtin.include_role:
+            name: service_dst_server
+            tasks_from: setup_vars
+          vars:
+            <<: *base
+            dst_shards:
+              - name: Master
+                is_master: true
+                server_port: 10999
+                master_server_port: 27016
+                authentication_port: 8766
+              - name: Caves
+                server_port: 10999
+                master_server_port: 27017
+                authentication_port: 8767
+                worldgen_preset: DST_CAVE
+        - name: Should not get here
+          ansible.builtin.fail:
+            msg: a duplicate port was ACCEPTED
+      rescue:
+        - name: Refused as required
+          ansible.builtin.assert:
+            that:
+              [
+                "'dst_shards is not a valid cluster' in ansible_failed_result.msg",
+              ]
+            quiet: true
+
+    - name: An online cluster with no token item must be refused
+      block:
+        - name: Include the resolver online without a token
+          ansible.builtin.include_role:
+            name: service_dst_server
+            tasks_from: setup_vars
+          vars:
+            <<: *base
+            dst_offline: false
+            dst_cluster_token_item: ""
+        - name: Should not get here
+          ansible.builtin.fail:
+            msg: an online cluster without a token was ACCEPTED
+      rescue:
+        - name: Refused as required
+          ansible.builtin.assert:
+            that: ["'dst_cluster_token_item' in ansible_failed_result.msg"]
+            quiet: true
+
+    - name: A mod restricted to an undeclared shard must be refused
+      block:
+        - name: Include the resolver with a bad mod shard
+          ansible.builtin.include_role:
+            name: service_dst_server
+            tasks_from: setup_vars
+          vars:
+            <<: *base
+            dst_mods: [{ id: "1", shards: [Nowhere] }]
+        - name: Should not get here
+          ansible.builtin.fail:
+            msg: a mod naming an undeclared shard was ACCEPTED
+      rescue:
+        - name: Refused as required
+          ansible.builtin.assert:
+            that:
+              ["'may only name declared shards' in ansible_failed_result.msg"]
+            quiet: true
+
+    - name: Near-miss — a secondary shard without a preset is ADVISED, not refused
+      ansible.builtin.include_role:
+        name: service_dst_server
+        tasks_from: setup_vars
+      vars:
+        <<: *base
+        dst_shards:
+          - name: Master
+            is_master: true
+            server_port: 10999
+            master_server_port: 27016
+            authentication_port: 8766
+          - name: Caves
+            server_port: 11000
+            master_server_port: 27017
+            authentication_port: 8767
+
+    - name: The advisory names the forest-caves trap
+      ansible.builtin.assert:
+        that:
+          - _dst_advisories | select('search', 'generates a FOREST') | list | length == 1
+        quiet: true
+
+    # ------------------------------------------------- credentials passed as VALUES, not items
+    # A caller without 1Password passes the token and password themselves (e.g. from Ansible
+    # Vault). No vault and no item is declared, so reaching the files proves no lookup ran.
+    - name: Resolve an online cluster whose credentials are passed directly
+      ansible.builtin.include_role:
+        name: service_dst_server
+        tasks_from: setup_vars
+      vars: &direct
+        <<: *base
+        dst_root: "{{ _root }}-direct"
+        dst_offline: false
+        dst_cluster_token: "pds-g^KU_fixture^molecule-token"
+        dst_cluster_password: molecule-join-pw
+        dst_secret_vault: ""
+        dst_cluster_token_item: ""
+        dst_cluster_password_item: ""
+
+    - name: Write its cluster files
+      ansible.builtin.include_role:
+        name: service_dst_server
+        tasks_from: config
+      vars: *direct
+
+    - name: Read the rendered token and cluster.ini back
+      ansible.builtin.slurp:
+        src: "{{ _dst_cluster_path }}/{{ item }}"
+      loop: [cluster_token.txt, cluster.ini]
+      register: _direct
+
+    - name: The passed values are the ones written
+      ansible.builtin.assert:
+        that:
+          - (_direct.results[0].content | b64decode) == 'pds-g^KU_fixture^molecule-token'
+          - "'cluster_password = molecule-join-pw' in (_direct.results[1].content | b64decode)"
+        quiet: true
+
+    # ------------------------------------------------------------------ the real converge
+    - name: Resolve the fixture cluster
+      ansible.builtin.include_role:
+        name: service_dst_server
+        tasks_from: setup_vars
+      vars: *base
+
+    - name: Write the cluster files (the role's real config.yml)
+      ansible.builtin.include_role:
+        name: service_dst_server
+        tasks_from: config
+      vars: *base
+
+    - name: Create the rendered-templates directory
+      ansible.builtin.file:
+        path: "{{ _root }}/rendered"
+        state: directory
+        mode: "0755"
+
+    - name: Render the unit and host-script templates
+      # The runtime tasks need podman and systemd, so its templates are rendered directly from the
+      # role (a legitimate house pattern — not a stub-plus-filter copy, MOLMIRROR-01) and checked
+      # for syntax in verify.yml.
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../../templates/{{ item.src }}"
+        dest: "{{ _root }}/rendered/{{ item.dest }}"
+        mode: "0644"
+      loop:
+        - { src: dst-shard.service.j2, dest: dst-caves.service }
+        - { src: dst-prepare.service.j2, dest: dst-prepare.service }
+        - { src: dst.target.j2, dest: dst.target }
+        - { src: dst-control.service.j2, dest: dst-control.service }
+        - { src: dst-prepare-host.sh.j2, dest: dst-prepare-host.sh }
+        - { src: dst-backup.sh.j2, dest: dst-backup.sh }
+        - { src: Containerfile.j2, dest: Containerfile }
+      vars:
+        shard: "{{ _dst_shards | selectattr('name', 'equalto', 'Caves') | first }}"
+      loop_control:
+        label: "{{ item.dest }}"
+
+    - name: Record the converge
+      ansible.builtin.copy:
+        dest: "{{ _root }}/.molecule-converged"
+        content: "converged\n"
+        mode: "0644"

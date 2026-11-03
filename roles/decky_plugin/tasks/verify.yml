@@ -1,0 +1,20 @@
+---
+# ENTRYPOINT (read-only): is the plugin loaded and healthy — judged from the running system:
+# Decky's unit, the backend process Decky titled "<name> (<dir>/main.py)", the newest log that
+# backend wrote since it started, Decky's disabled list, and the config as the plugin's own
+# validator sees it. Three outcomes: loaded / failed / cannot tell. Writes nothing.
+#
+# With decky_plugin_require_loaded it FAILS unless loaded and the config (if present) parsed.
+
+- name: Resolve declared options over their generated defaults
+  ansible.builtin.include_tasks: _resolve_defaults.yml
+
+- name: Check declared constraints
+  ansible.builtin.include_tasks: _argspec_guards.yml
+
+- name: Probe
+  ansible.builtin.include_tasks: _probe.yml
+  vars:
+    _dp_wait: false
+    _dp_require: "{{ decky_plugin_require_loaded | bool }}"
+    _dp_require_config: true

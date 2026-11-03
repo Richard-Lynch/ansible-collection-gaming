@@ -1,0 +1,29 @@
+# {{ ansible_managed }}
+# DST {{ dst_instance }}: the {{ shard.name }} shard{{ ' (MASTER)' if shard.is_master else '' }} of cluster {{ dst_cluster_dir_name }}.
+#
+# Shape follows `podman generate systemd --new`: the container is created at start and removed
+# at stop, conmon reports readiness (sdnotify=conmon), and the cidfile ties the unit to exactly
+# the container it started. A stop is `podman stop`, which sends SIGTERM to dst-shard — and that
+# turns it into c_shutdown(true), a SAVE, within --stop-timeout.
+[Unit]
+Description=DST {{ dst_instance }}: shard {{ shard.name }}
+PartOf={{ _dst_target }}
+Requires={{ _dst_prepare_unit }}
+After={{ _dst_prepare_unit }}{% if not shard.is_master %} {{ _dst_masters[0].unit }}{% endif %}
+
+# A shard that cannot start (bad config, broken mod) must not retry forever.
+StartLimitIntervalSec=900
+StartLimitBurst=3
+
+[Service]
+Environment=PODMAN_SYSTEMD_UNIT=%n
+Type=notify
+NotifyAccess=all
+Restart=on-failure
+RestartSec=30
+TimeoutStartSec=300
+TimeoutStopSec={{ (dst_stop_timeout | int) + 30 }}
+ExecStartPre=/usr/bin/rm -f %t/%n.ctr-id
+ExecStart={{ dst_podman }} run --cidfile=%t/%n.ctr-id --cgroups=no-conmon --rm --sdnotify=conmon --replace --detach --name {{ shard.container }} --network host --stop-timeout {{ dst_stop_timeout | int }} --log-driver journald --env DST_CLUSTER={{ dst_cluster_dir_name }}{% for v in _dst_volumes %} --volume {{ v }}{% endfor %} {{ _dst_image }} dst-shard {{ shard.name }}
+ExecStop={{ dst_podman }} stop --ignore --time {{ dst_stop_timeout | int }} --cidfile=%t/%n.ctr-id
+ExecStopPost={{ dst_podman }} rm --force --ignore --time 10 --cidfile=%t/%n.ctr-id

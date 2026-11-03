@@ -1,0 +1,26 @@
+# Copyright: (c) 2026, Richard Lynch
+# GNU General Public License v3.0+ (see https://www.gnu.org/licenses/gpl-3.0.txt)
+---
+DOCUMENTATION:
+  name: dst_control_shard
+  short_description: Turn a normalised shard into the control service's shard record
+  author: Richard Lynch (@Richard-Lynch)
+  description:
+    - "Returns the C(name), C(unit), C(container), C(port), C(log) path and C(is_master) fields the control endpoint reads."
+  options:
+    _input:
+      description: "A shard as the service_dst_server role normalises it."
+      type: dict
+      required: true
+    cluster_path:
+      description: "The cluster directory the shard's log sits under."
+      type: str
+      required: true
+EXAMPLES: |
+  - name: Use dst_control_shard
+    ansible.builtin.debug:
+      msg: "{{ shards | map('richard_lynch.gaming.dst_control_shard', '/srv/dst/cluster') | list }}"
+RETURN:
+  _value:
+    description: "The shard record."
+    type: dict

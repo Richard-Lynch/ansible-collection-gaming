@@ -1,0 +1,38 @@
+---
+# AUTO-GENERATED defaults file — DO NOT EDIT.
+#
+# Source of truth: roles/decky_plugin/meta/argument_specs.py
+# Regenerate:      venv/bin/python tools/argspec/cli.py x generate decky_plugin
+#
+# Edits here are silently overwritten on the next generation. To change a value or its
+# documentation, change the OptionSpec in the source file above — descriptions there
+# are emitted as the comments in this file.
+# Entrypoint:      verify
+
+# Fail unless the outcome is `loaded` (and the config parsed).
+decky_plugin_require_loaded__default: false
+
+# Home directory holding ~/homebrew. Empty derives it from the connecting user's
+# facts (ansible_env.HOME); set only by tests.
+decky_plugin_home__default: ''
+
+# Decky Loader's systemd unit (a SYSTEM unit, running as root).
+decky_plugin_service__default: plugin_loader
+
+# Interpreter on the device for the read-only probe.
+decky_plugin_python__default: python3
+
+# Python regex the plugin's backend writes to its decky.logger log once it has
+# started (e.g. 'My Plugin backend loaded'). Empty: a running backend
+# process alone counts as loaded — weaker, and the report says which was used.
+decky_plugin_ready_pattern__default: ''
+
+# File name of the plugin's config in its settings directory.
+decky_plugin_config_file__default: config.json
+
+# 'module:function' importable from the plugin's OWN py_modules, called with the
+# config path and returning (config, error) — error None means parsed. Lets the
+# plugin's own validator judge the config, on the controller before it is written
+# and on the device after. A returned config carrying a non-empty `errors` dict
+# (per-section problems) is reported as invalid. Empty: JSON syntax only.
+decky_plugin_config_check__default: ''

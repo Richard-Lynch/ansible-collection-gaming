@@ -1,0 +1,186 @@
+---
+# ENTRYPOINT: make Wake-on-LAN survive a reboot AND a SteamOS update.
+#
+# THE CONSTRAINT. SteamOS replaces its rootfs on atomic updates, so most of /etc is wiped. The
+# obvious mechanism for this job — a udev rule in /etc/udev/rules.d — is NOT on Valve's preserve
+# list and would disappear at the next OS update without a word.
+#
+# WHAT IS PRESERVED, from Valve's own /usr/lib/rauc/atomic-update-keep.conf:
+#   /etc/systemd/system/*.service        <- the unit
+#   /etc/systemd/system/*.wants/**       <- how `systemctl enable` records it
+#
+# So a system service survives where a udev rule does not, and runs as root so it can write the
+# sysfs nodes a user unit cannot reach.
+#
+# The rootfs is read-only by default; `steamos-readonly disable` is Valve's supported way to
+# make it writable, and it is re-enabled afterwards rather than left open.
+
+- name: Apply role defaults
+  ansible.builtin.include_tasks: setup_vars.yml
+
+- name: Confirm this SteamOS preserves system units across updates
+  # Read from the live keep-list rather than assumed: if a future SteamOS drops this line, the
+  # whole approach silently stops surviving updates and we should fail loudly here instead of
+  # discovering it after an update has already wiped the unit.
+  ansible.builtin.command:
+    cmd: grep -c '^/etc/systemd/system/\*\.service$' /usr/lib/rauc/atomic-update-keep.conf
+  register: _sd_keep
+  changed_when: false
+  failed_when: false
+
+- name: Assert the preserve rule is present
+  ansible.builtin.assert:
+    that:
+      - (_sd_keep.stdout | default('0') | trim | int) > 0
+    fail_msg: >-
+      /etc/systemd/system/*.service is NOT in this SteamOS's atomic-update keep list
+      (/usr/lib/rauc/atomic-update-keep.conf). A unit installed there would be wiped by the next
+      OS update. Re-check what this release preserves before relying on it.
+    quiet: true
+
+- name: Report the plan
+  ansible.builtin.debug:
+    msg: >-
+      {{ 'Installing' if (steamdeck_apply | bool) else 'WOULD install' }}
+      /etc/systemd/system/{{ steamdeck_wol_unit }} — a boot-time service that re-enables the USB
+      and PCI wakeup flags, which reset to disabled on every boot.
+      This survives an atomic OS update because Valve's keep-list preserves
+      /etc/systemd/system/*.service; a udev rule would not.
+      {{ '' if (steamdeck_apply | bool) else 'Re-run with steamdeck_apply=true.' }}
+
+
+- name: Install the unit and re-seal the rootfs
+  when: steamdeck_apply | bool
+  block:
+    - name: Make the rootfs writable
+      # INSIDE the block, so the `always:` re-seal below covers this task too. Previously this
+      # ran BEFORE the block: if it succeeded and the play was then interrupted — a failed task,
+      # Ctrl-C, a lost connection — the rootfs was left unsealed with nothing to re-seal it, and
+      # nothing warns about that state afterwards.
+      #
+      # Strictly this is belt-and-braces: /etc is a var-backed overlay and writable regardless.
+      # But /etc/systemd/system is not writable while the rootfs is sealed, and leaving the
+      # system in a state SteamOS does not expect is worse than the small cost of toggling it.
+      ansible.builtin.command:
+        cmd: steamos-readonly disable
+      become: true
+      changed_when: true
+
+    - name: Install the udev rule
+      # THE PRIMARY MECHANISM. power/wakeup resets on every device ADD, not just at boot, so a
+      # dock replug mid-uptime silently re-disables the chain — which a boot service cannot
+      # catch. /etc/udev/rules.d is an overlayfs backed by the var partition
+      # (upperdir=/new_root/var/lib/overlays/etc/upper), and var is synced across atomic updates.
+      ansible.builtin.template:
+        src: usb-wakeup.rules.j2
+        dest: "/etc/udev/rules.d/{{ steamdeck_wol_udev_rule }}"
+        mode: "0644"
+        owner: root
+        group: root
+      become: true
+      register: _sd_rule
+      notify: reload udev
+
+    - name: Install the wakeup unit
+      ansible.builtin.template:
+        src: usb-wakeup.service.j2
+        dest: "/etc/systemd/system/{{ steamdeck_wol_unit }}"
+        mode: "0644"
+        owner: root
+        group: root
+      become: true
+      register: _sd_unit
+
+    - name: Re-link the unit's [Install] targets when the unit changed
+      # `enabled: true` is a no-op on an ALREADY-enabled unit, so a unit whose WantedBy= gained
+      # sleep.target would never get that link: disable, then the next task enables it afresh.
+      # Inline rather than a handler because the enable below must run AFTER it, in this block.
+      ansible.builtin.systemd_service:  # noqa: no-handler
+        name: "{{ steamdeck_wol_unit }}"
+        enabled: false
+        daemon_reload: true
+      become: true
+      when: _sd_unit is changed
+
+    - name: Enable and run it now
+      ansible.builtin.systemd_service:
+        name: "{{ steamdeck_wol_unit }}"
+        enabled: true
+        state: restarted
+        daemon_reload: true
+      become: true
+
+  always:
+    - name: Re-seal the rootfs
+      # ALWAYS, so a failure part-way through does not leave the system writable.
+      ansible.builtin.command:
+        cmd: steamos-readonly enable
+      become: true
+      changed_when: true
+
+- name: Apply pending udev changes before verifying
+  # Handlers otherwise run at play end — AFTER the assertions that check their effect, which
+  # would fail a correct run on first apply.
+  ansible.builtin.meta: flush_handlers
+
+- name: Read the wakeup state back
+  # The unit's own exit status proves nothing — it exits 0 whether or not the writes landed,
+  # because a sysfs write to an unsupported node fails silently. The only evidence is reading
+  # the flags afterwards.
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -o pipefail
+      # The WIRED chain only (r8152), as the unit arms it. Walking every interface counted the
+      # WiFi adapter, which wol_disarm_wifi DELIBERATELY leaves disabled — so such a gate fails
+      # every correct run (the whole wired chain enabled, the assert red on the ath11k card).
+      for iface in $(ls /sys/class/net | grep -v '^lo$'); do
+        drv=$(basename "$(readlink -f "/sys/class/net/$iface/device/driver" 2>/dev/null)" 2>/dev/null)
+        [ "$drv" = "r8152" ] || continue
+        d=$(readlink -f "/sys/class/net/$iface/device" 2>/dev/null) || continue
+        while [ -n "$d" ] && [ "$d" != "/" ]; do
+          [ -f "$d/power/wakeup" ] && printf '%s=%s\n' "$(basename "$d")" "$(cat "$d/power/wakeup")"
+          d=$(dirname "$d")
+        done
+      done
+      printf 'unit_enabled=%s\n' "$(systemctl is-enabled {{ steamdeck_wol_unit }} 2>/dev/null)"
+      # A oneshot with RemainAfterExit=no is INACTIVE between runs by design (so each sleep starts
+      # it again), so "active" is the wrong property; what matters is that it is hooked into
+      # sleep.target and that its last run succeeded.
+      printf 'unit_on_sleep=%s\n' "$( [ -e /etc/systemd/system/sleep.target.wants/{{ steamdeck_wol_unit }} ] && echo yes || echo NO)"
+      printf 'unit_result=%s\n' "$(systemctl show -p Result --value {{ steamdeck_wol_unit }} 2>/dev/null)"
+      # steamos-readonly's OWN status, not the live mount options. The tool sets the flag that
+      # applies at boot and does NOT remount immediately, so `findmnt` reports rw for the rest of
+      # the session even after a successful re-seal — asserting on that fails a correct run.
+      printf 'readonly=%s\n' "$(steamos-readonly status 2>/dev/null)"
+      printf 'mount_now=%s\n' "$(findmnt -no OPTIONS / | cut -d, -f1)"
+  register: _sd_persist
+  changed_when: false
+  when: steamdeck_apply | bool
+
+- name: Assert the unit is installed, enabled, and had an effect
+  ansible.builtin.assert:
+    that:
+      - "'unit_enabled=enabled' in _sd_persist.stdout"
+      - "'unit_on_sleep=yes' in _sd_persist.stdout"
+      - "'unit_result=success' in _sd_persist.stdout"
+      - "'=disabled' not in _sd_persist.stdout"
+      # Undocked there is no r8152 and the walk prints nothing — which must not pass as "armed".
+      - "_sd_persist.stdout_lines | select('search', '^usb[0-9]+=enabled$') | list | length > 0"
+      - "'readonly=enabled' in _sd_persist.stdout"
+    fail_msg: >-
+      Persistence is not in place: {{ _sd_persist.stdout_lines | join(' ') }}.
+      '=disabled' means a wakeup link is still blocked and a magic packet will be swallowed;
+      'readonly=disabled' means the rootfs was left unsealed and must be re-enabled.
+    quiet: true
+  when: steamdeck_apply | bool
+
+- name: Report
+  ansible.builtin.debug:
+    msg:
+      - "{{ _sd_persist.stdout_lines }}"
+      - >-
+        Installed. The real test is a REBOOT — these flags reset on every boot, and this unit is
+        what re-applies them. Verify with steamdeck_action=wol_report after restarting, then by
+        actually waking the device.
+  when: steamdeck_apply | bool

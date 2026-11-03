@@ -1,0 +1,133 @@
+---
+# ENTRYPOINT: back up and restore Steam library artwork for non-Steam shortcuts.
+#
+# WHY THIS EXISTS. Steam keys grid artwork by APPID, and a shortcut's appid is derived from its
+# exe and name — so renaming a shortcut or changing its command orphans every artwork file at
+# once. The art is then still on disk, keyed to an appid nothing references, and the tile goes
+# blank. Nothing warns you.
+#
+# Worse, a device reset loses hand-curated art that was assembled a piece at a time.
+#
+# So the art is kept on the CONTROLLER, in steamdeck_artwork_dir, keyed by SHORTCUT NAME, not by
+# appid — the name is what a human means and what survives the derivation changing. Restore looks
+# up each shortcut's CURRENT appid and writes the files under that. The tree is the caller's data
+# (tile art is usually third-party), so the role takes it by path rather than shipping any.
+#
+#   steamdeck_artwork_action=backup    pull art off the device into steamdeck_artwork_dir/_device/
+#   steamdeck_artwork_action=restore   push the tree's art back, keyed to current appids
+#   steamdeck_artwork_action=prune     delete ORPHANED shortcut art (preview unless steamdeck_apply)
+#
+# The .json sidecars carry logo POSITIONING — where the logo sits on the hero image. They are a
+# few hundred bytes each and are the one genuinely unrecoverable part: the images can be
+# downloaded again from SteamGridDB, the layout choices cannot.
+
+- name: Apply role defaults
+  ansible.builtin.include_tasks: setup_vars.yml
+
+- name: HARD GATE — the artwork tree is named
+  # Every action needs it: restore stages it, prune hashes it, backup writes under it.
+  ansible.builtin.assert:
+    that:
+      - steamdeck_artwork_dir | length > 0
+    fail_msg: >-
+      steamdeck_artwork_dir is empty: set it in inventory to the controller directory holding the
+      tile artwork (one slug(NAME)/ directory per shortcut, plus MANIFEST.json).
+    quiet: true
+
+- name: Read the current shortcuts
+  ansible.builtin.include_tasks: shortcuts_report.yml
+
+- name: Note the grid directory
+  ansible.builtin.set_fact:
+    _sd_grid: "{{ _sd_shortcuts_path | dirname }}/grid"
+
+- name: Map each shortcut to its UNSIGNED appid
+  # Steam stores the appid SIGNED in shortcuts.vdf and names artwork files with the UNSIGNED
+  # form. Getting this wrong finds nothing and reports every shortcut as having no art.
+  ansible.builtin.set_fact:
+    _sd_art_map: >-
+      {{ _sd_art_map | default({}) | combine({
+           item.value.AppName: (item.value.appid | int) + 4294967296
+             if (item.value.appid | int) < 0 else (item.value.appid | int)
+         }) }}
+  loop: "{{ (_sd_sc.shortcuts | default({})) | dict2items }}"
+  loop_control:
+    label: "{{ item.value.AppName | default('?') }}"
+  when: item.value.AppName is defined
+
+- name: Report the artwork state
+  ansible.builtin.debug:
+    msg: "{{ _report.splitlines() }}"
+  vars:
+    _report: |
+      ===== ARTWORK =====
+      grid dir : {{ _sd_grid }}
+      action   : {{ steamdeck_artwork_action }}{{ '' if (steamdeck_apply | bool) else '  (report only)' }}
+
+      {% for name, appid in (_sd_art_map | default({})).items() | sort %}
+      {{ '%-28s' | format(name) }} appid={{ appid }}
+      {% endfor %}
+
+      Artwork is kept under {{ steamdeck_artwork_dir }}/<slug>/ keyed by NAME, because
+      an appid changes whenever a shortcut's exe or name changes and would orphan the whole set.
+
+- name: Stage the vendored artwork on the device
+  # use_ssh_args: synchronize builds its OWN `--rsh` from the key alone and ignores
+  # ANSIBLE_SSH_ARGS, so without it rsync drops any SSH options set there (an IdentityAgent=none,
+  # say) and falls through to the SSH agent — "Connection closed by ... port 22", 0 bytes
+  # received, on a headless run, while every other task on the same host connects.
+  ansible.posix.synchronize:
+    use_ssh_args: true
+    src: "{{ steamdeck_artwork_dir }}/"
+    dest: "{{ steamdeck_helper_dir }}/grid_artwork/"
+    delete: false
+    rsync_opts: ["--exclude=_device", "--exclude=MANIFEST.json"]
+  when:
+    - steamdeck_apply | bool
+    - steamdeck_artwork_action == 'restore'
+
+- name: Restore artwork keyed to current appids
+  ansible.builtin.script:
+    cmd: >-
+      steam_artwork.py
+      --vendor-dir '{{ steamdeck_helper_dir }}/grid_artwork'
+      --grid-dir '{{ _sd_grid }}'
+      --shortcuts '{{ _sd_art_map | to_json }}'
+      --apply
+    executable: /usr/bin/python3
+  register: _sd_art
+  changed_when: (_sd_art.stdout[_sd_art.stdout.find('{') :] | from_json).changed | bool
+  when:
+    - steamdeck_apply | bool
+    - steamdeck_artwork_action == 'restore'
+
+- name: Report what was restored
+  ansible.builtin.debug:
+    msg:
+      - "restored: {{ _r.restored | default([]) | length }} file(s)"
+      - "already present (left alone): {{ _r.already_present | default([]) | length }}"
+      - "{{ ('no vendored art for: ' ~ (_r.no_vendored_art | join(', '))) if (_r.no_vendored_art | default([]) | length) > 0 else '' }}"
+  vars:
+    _r: "{{ _sd_art.stdout[_sd_art.stdout.find('{') :] | from_json }}"
+  when:
+    - steamdeck_apply | bool
+    - steamdeck_artwork_action == 'restore'
+    - _sd_art.stdout is defined
+
+- name: Back up artwork from the device into the artwork tree
+  # Pulls the live grid directory so hand-added art is captured before anything can lose it.
+  ansible.posix.synchronize:
+    use_ssh_args: true # see "Stage the vendored artwork" above
+    mode: pull
+    src: "{{ _sd_grid }}/"
+    dest: "{{ steamdeck_artwork_dir }}/_device/"
+    delete: false
+  when:
+    - steamdeck_apply | bool
+    - steamdeck_artwork_action == 'backup'
+
+- name: Prune orphaned non-Steam art
+  # The cleanup half: removing a tile leaves its art behind (restore never deletes). See
+  # _artwork_prune.yml for the orphan definition and its gates.
+  ansible.builtin.include_tasks: _artwork_prune.yml
+  when: steamdeck_artwork_action == 'prune'

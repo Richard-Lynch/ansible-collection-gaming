@@ -1,0 +1,80 @@
+---
+# ENTRYPOINT: remove the runtime — units, control endpoint, image. KEEPS every world save, every
+# backup and the installed server.
+#
+#   dst_action=uninstall dst_uninstall_confirm=dst
+#
+# Typing the instance name is the confirmation. The saves are deliberately out of this action's
+# reach: deleting a world is irreversible and is done by hand, under
+# <dst_root>/data, by someone who has looked at it.
+
+- name: HARD GATE — confirm by instance name
+  ansible.builtin.assert:
+    that:
+      - dst_uninstall_confirm == dst_instance
+    fail_msg: >-
+      Set dst_uninstall_confirm={{ dst_instance }} to remove instance '{{ dst_instance }}'s units,
+      control endpoint and image (saves and backups are kept). Got '{{ dst_uninstall_confirm }}'.
+    quiet: true
+
+- name: Is the target installed on the HOST?
+  # A stat, not a Jinja `is file` test: that test runs on the CONTROLLER, so it would check for a
+  # unit file on the wrong machine and silently skip the stop.
+  ansible.builtin.stat:
+    path: "{{ _dst_unit_dir }}/{{ _dst_target }}"
+  register: _dst_uninst_target
+
+- name: Stop the cluster (every shard saves)
+  ansible.builtin.include_tasks: stop.yml
+  when: _dst_uninst_target.stat.exists
+
+- name: Which of the control unit and target are installed?
+  ansible.builtin.stat:
+    path: "{{ _dst_unit_dir }}/{{ item }}"
+  loop: ["{{ _dst_control_unit }}", "{{ _dst_target }}"]
+  register: _dst_uninst_present
+
+- name: Stop and disable the installed ones
+  # Only units whose file exists, so a genuine failure FAILS. (The tempting alternative —
+  # failed_when: false and then asserting on `.failed` — can never fire: FAILED-01.)
+  ansible.builtin.systemd_service:
+    name: "{{ item.item }}"
+    scope: user
+    state: stopped
+    enabled: false
+  loop: "{{ _dst_uninst_present.results | selectattr('stat.exists') | list }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Remove the unit files
+  ansible.builtin.file:
+    path: "{{ _dst_unit_dir }}/{{ item }}"
+    state: absent
+  loop: >-
+    {{ [_dst_target, _dst_prepare_unit, _dst_control_unit] + (_dst_shards | map(attribute='unit') | list) }}
+  notify: Reload the user manager
+
+- name: List this role's images
+  ansible.builtin.command:
+    argv:
+      [
+        "{{ dst_podman }}",
+        images,
+        --format,
+        "{{ '{{' }}.Repository{{ '}}' }}:{{ '{{' }}.Tag{{ '}}' }}",
+        "{{ dst_image_name }}",
+      ]
+  register: _dst_uninst_images
+  changed_when: false
+
+- name: Remove them
+  ansible.builtin.command:
+    argv: ["{{ dst_podman }}", rmi, "{{ item }}"]
+  loop: "{{ _dst_uninst_images.stdout_lines }}"
+  changed_when: true
+
+- name: Report
+  ansible.builtin.debug:
+    msg:
+      - "Removed units, the control endpoint and {{ _dst_uninst_images.stdout_lines | length }} image(s)."
+      - "KEPT: saves under {{ _dst_root }}/data, backups under {{ _dst_dirs.backups }}, the server under {{ _dst_dirs.server }}."

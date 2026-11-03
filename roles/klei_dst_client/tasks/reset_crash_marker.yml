@@ -1,0 +1,72 @@
+---
+# ENTRYPOINT: reset the game's CRASH MARKER after DST was closed mid-load.
+#
+# WHY. From the game's own scripts/modindex.lua: BeginStartupSequence writes
+# client_save/boot_modindex = "loading" and EndStartupSequence writes "done"; if the next launch
+# finds "loading" it disables EVERY mod and shows "game didn't start correctly last time".
+# After a scripted join test the file reads `KLEI     1 loading`, and the next launch turns every
+# client mod off. Any close while the client is still loading (the lobby
+# after connecting — which is where a test closes it) leaves the marker set. No signal avoids it:
+# SIGTERM is already the gentlest, and it is WHEN the game is closed, not how, that matters.
+#
+# So reset it to "done", as the game itself would have. Only with no Steam game running (the game
+# rewrites the file), only when it reads "loading", and keeping the file's own header bytes.
+# Safe at any time and any number of times. It never closes the game: the caller does that first
+# (steamdeck's close_game entrypoint, for example).
+
+- name: Resolve declared options over their generated defaults
+  ansible.builtin.include_tasks: _resolve_defaults.yml
+
+- name: Derive the client data path
+  # From the connecting user's facts (THE THIRD RULE), unless a test points it at a fixture.
+  ansible.builtin.set_fact:
+    _kdc_klei_dir: >-
+      {{ (klei_dst_client_home if klei_dst_client_home | length > 0 else ansible_env.HOME)
+         ~ '/.local/share/Steam/steamapps/compatdata/322330/pfx/drive_c/users/steamuser/Documents/Klei/DoNotStarveTogether' }}
+
+- name: Is any Steam game running?
+  ansible.builtin.command:
+    argv: [pgrep, -f, "^[^ ]*/[r]eaper SteamLaunch AppId="]
+  register: _kdc_cgame
+  changed_when: false
+  failed_when: _kdc_cgame.rc not in [0, 1]
+
+- name: Find the crash markers
+  ansible.builtin.find:
+    paths: "{{ _kdc_klei_dir }}"
+    patterns: boot_modindex
+    recurse: true
+    depth: 3
+  register: _kdc_markers
+  when: _kdc_cgame.rc == 1
+
+- name: Read them
+  ansible.builtin.slurp:
+    src: "{{ item.path }}"
+  loop: "{{ _kdc_markers.files | default([]) }}"
+  loop_control:
+    label: "{{ item.path }}"
+  register: _kdc_marker_raw
+  when: _kdc_cgame.rc == 1
+
+- name: Reset a marker left at "loading" to the game's own "done"
+  ansible.builtin.copy:
+    dest: "{{ item.item.path }}"
+    content: "{{ item.content | b64decode | regex_replace('loading$', 'done') }}"
+    mode: preserve
+  loop: "{{ _kdc_marker_raw.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.path | default('') }}"
+  when:
+    - _kdc_cgame.rc == 1
+    - item.content is defined
+    - (item.content | b64decode) is search('loading$')
+
+- name: Report the marker
+  ansible.builtin.debug:
+    msg: >-
+      {{ 'A Steam game is running, so the crash marker was left alone (the game rewrites it).'
+         if _kdc_cgame.rc == 0 else
+         ('boot_modindex: ' ~ (_kdc_marker_raw.results | default([])
+            | map(attribute='content') | map('b64decode') | list)
+          ~ ' (any "loading" above was reset to "done").') }}

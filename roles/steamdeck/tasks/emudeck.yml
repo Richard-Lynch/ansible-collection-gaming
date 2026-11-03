@@ -1,0 +1,180 @@
+---
+# ENTRYPOINT: bring EmuDeck's settings.json under declarative control. Reports by default;
+# writes with steamdeck_apply=true.
+#
+# WHY THIS IS A MERGE AND NOT A TEMPLATE. The obvious shape — settings.json.j2 rendering all 41
+# keys — is wrong here, and the reason is worth stating because it looks like the house pattern:
+#
+#   * EACH ENTRY CARRIES UPSTREAM METADATA, not just a value:
+#         "ares": {"id": "ares", "status": false, "name": "ares", "platforms": "Retro Systems"}
+#     `name`/`platforms`/`desc` belong to EmuDeck and change as it adds emulators. Reproducing
+#     them in a template pins this device to a 2.5.0-era catalogue, and an emulator added
+#     upstream would VANISH from the file the next time we wrote it. The fields are not even
+#     consistent between entries — `dolphin` has no `platforms`, `ares` does — so there is no
+#     stable shape to template against.
+#
+#   * THE FILE HOLDS LIVE CREDENTIALS: sudoPass is the device's sudo password in plaintext, and
+#     achievements.{pass,token} a RetroAchievements password and API token — so it must never be
+#     copied off the device into version control.
+#
+# So this reads the file on the device, applies ONLY the declared keys, and leaves the rest as
+# EmuDeck wrote it. We own a small set of explicit decisions; EmuDeck keeps the rest.
+#
+# ---------------------------------------------------------------------------------------------
+# THE KEY THAT EARNS THIS PLAY IS overwriteConfigEmus.
+#
+# For each emulator it decides whether a setup.sh run REPLACES that emulator's config (keeping a
+# .bak) or leaves it alone. EmuDeck's default is TRUE for every installed emulator, so any rerun
+# — including one triggered from EmuDeck's own GUI — silently reverts hand-tuning.
+# Declaring it false is what makes a hand-tuned emulator config survive.
+#
+# ---------------------------------------------------------------------------------------------
+# SECRETS come from 1Password via the CACHED lookup and are passed on a separate argument from
+# the ordinary settings, so they can be masked unconditionally in every report. The helper never
+# prints a credential — a changed secret reports as `sudoPass: *** -> ***`. The file mode is
+# tightened to 0600 on write; EmuDeck creates it 0644, world-readable, holding that password.
+
+- name: Apply role defaults
+  ansible.builtin.include_tasks: setup_vars.yml
+
+- name: Install the settings helper
+  ansible.builtin.copy:
+    src: emudeck_settings.py
+    dest: "{{ steamdeck_helper_dir }}/emudeck_settings.py"
+    mode: "0755"
+
+- name: Resolve the EmuDeck secrets from 1Password
+  # Through richard_lynch.common.onepassword_cached, NOT a bare `op` call: the cached lookup
+  # fetches each value once, and an uncached `op` call can raise an interactive approval prompt.
+  #
+  # OPT-IN. With steamdeck_emudeck_secrets empty — the default — the credentials already on the
+  # device are left exactly as they are. That is deliberate: this play's value is in
+  # overwriteConfigEmus, and rewriting a password that is already correct earns nothing while
+  # adding a way to get it wrong.
+  #
+  # Each entry maps a settings.json path to a 1Password item/field:
+  #   sudoPass:           {item: device-sudo, field: password}
+  #   achievements.user:  {item: retroachievements, field: username}
+  ansible.builtin.set_fact:
+    _sd_ed_secret_values: >-
+      {{ _sd_ed_secret_values | default({}) | combine({
+           item.key: lookup('richard_lynch.common.onepassword_cached', item.value.item,
+                            field=item.value.field,
+                            vault=item.value.vault | default(steamdeck_sudo_secret_vault))
+         }) }}
+  loop: "{{ steamdeck_emudeck_secrets | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  no_log: true
+
+- name: Build the secrets document
+  # Turns dotted paths ("achievements.user") into the nested shape settings.json uses, so
+  # inventory can name one field without restating the whole achievements block.
+  ansible.builtin.set_fact:
+    _sd_ed_secret_doc: >-
+      {{ _sd_ed_secret_doc | default({}) | combine(
+           {item.key.split('.')[0]: {item.key.split('.')[1]: item.value}}
+           if '.' in item.key else {item.key: item.value},
+           recursive=true) }}
+  loop: "{{ (_sd_ed_secret_values | default({})) | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  no_log: true
+
+- name: Report what would change
+  # DELIBERATELY WITHOUT --secrets. This output is printed in full, and a dry run has no need to
+  # know a credential's value: a secret that differs shows up on the apply path as `*** -> ***`.
+  # Keeping them off this command line means the report can never be the thing that leaks one.
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/python3
+      - "{{ steamdeck_helper_dir }}/emudeck_settings.py"
+      - --path
+      - "{{ ansible_env.HOME }}/.config/EmuDeck/settings.json"
+      - --settings
+      - "{{ steamdeck_emudeck_settings | to_json }}"
+  register: _sd_ed_plan
+  changed_when: false
+  failed_when: false
+
+- name: Fail with EmuDeck's own message if the file is missing
+  ansible.builtin.assert:
+    that:
+      - "'error' not in (_sd_ed_plan.stdout[_sd_ed_plan.stdout.find('{') :] | from_json)"
+    fail_msg: >-
+      {{ (_sd_ed_plan.stdout[_sd_ed_plan.stdout.find('{') :] | from_json).error | default('') }}
+    quiet: true
+
+- name: Show the plan
+  ansible.builtin.debug:
+    msg: "{{ _report.splitlines() }}"
+  vars:
+    _p: "{{ _sd_ed_plan.stdout[_sd_ed_plan.stdout.find('{') :] | from_json }}"
+    _report: |
+      ===== EMUDECK SETTINGS =====
+      file mode  : {{ _p.mode.found }}{{ ' -> ' ~ _p.mode.wanted ~ ' (world-readable, holds a sudo password)' if _p.mode.found != _p.mode.wanted else ' (already restricted)' }}
+
+      {{ ('CHANGES (' ~ (_p.changes | length) ~ '):') if _p.changes else 'No changes — the device already matches what is declared.' }}
+      {% for c in _p.changes %}
+        {{ c }}
+      {% endfor %}
+
+      {{ '' if (steamdeck_apply | bool) else '(report only — re-run with steamdeck_apply=true)' }}
+
+- name: Apply the settings
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/python3
+      - "{{ steamdeck_helper_dir }}/emudeck_settings.py"
+      - --path
+      - "{{ ansible_env.HOME }}/.config/EmuDeck/settings.json"
+      - --settings
+      - "{{ steamdeck_emudeck_settings | to_json }}"
+      - --secrets
+      - "{{ _sd_ed_secret_doc | default({}) | to_json }}"
+      - --apply
+  register: _sd_ed_apply
+  changed_when: (_sd_ed_apply.stdout[_sd_ed_apply.stdout.find('{') :] | from_json).changed | bool
+  when: steamdeck_apply | bool
+  # The secrets document is on this task's command line, so the task itself must not be logged.
+  # The helper's OUTPUT is already masked, which is why the report below can still be shown.
+  no_log: true
+
+- name: Read the settings back
+  # From the file itself, not from the apply task's own report. A re-read reporting no changes is
+  # what proves the write landed and parses.
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/python3
+      - "{{ steamdeck_helper_dir }}/emudeck_settings.py"
+      - --path
+      - "{{ ansible_env.HOME }}/.config/EmuDeck/settings.json"
+      - --settings
+      - "{{ steamdeck_emudeck_settings | to_json }}"
+      - --secrets
+      - "{{ _sd_ed_secret_doc | default({}) | to_json }}"
+  register: _sd_ed_after
+  changed_when: false
+  failed_when: false
+  when: steamdeck_apply | bool
+  no_log: true
+
+- name: Assert the settings landed and the file is no longer world-readable
+  ansible.builtin.assert:
+    that:
+      - not (_sd_ed_after.stdout[_sd_ed_after.stdout.find('{') :] | from_json).changed | bool
+    fail_msg: >-
+      settings.json did not match after the write:
+      {{ (_sd_ed_after.stdout[_sd_ed_after.stdout.find('{') :] | from_json).changes | join('; ') }}
+    quiet: true
+  when: steamdeck_apply | bool
+
+- name: Report the result
+  ansible.builtin.debug:
+    msg:
+      - "settings.json converged and verified; mode 0600."
+      - "The original was saved alongside it as settings.json.iaac-orig (first write only)."
+      - >-
+        NOTE this changes what a FUTURE setup.sh run would do. It does not reconfigure any
+        emulator now — run EmuDeck itself for that.
+  when: steamdeck_apply | bool

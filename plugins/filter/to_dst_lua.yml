@@ -1,0 +1,26 @@
+# Copyright: (c) 2026, Richard Lynch
+# GNU General Public License v3.0+ (see https://www.gnu.org/licenses/gpl-3.0.txt)
+---
+DOCUMENTATION:
+  name: to_dst_lua
+  short_description: Render a value as a Lua literal for Don't Starve Together config files
+  author: Richard Lynch (@Richard-Lynch)
+  description:
+    - "Booleans, numbers, strings, lists and dicts become Lua literals; dict keys are sorted and bracketed when they are not Lua identifiers or are Lua keywords."
+    - "A null dict value is dropped; a null inside a list, NaN or an unsupported type raises."
+  options:
+    _input:
+      description: "The value to render."
+      type: raw
+      required: true
+    indent:
+      description: "Spaces per nesting level."
+      type: int
+EXAMPLES: |
+  - name: Use to_dst_lua
+    ansible.builtin.debug:
+      msg: "{{ {'enabled': true} | richard_lynch.gaming.to_dst_lua }}"
+RETURN:
+  _value:
+    description: "The Lua literal."
+    type: str

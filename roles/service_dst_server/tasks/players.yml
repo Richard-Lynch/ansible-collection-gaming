@@ -1,0 +1,70 @@
+---
+# ENTRYPOINT: the master's raw client table, straight from its console. READ-ONLY.
+#
+#   dst_action=players
+#
+# WHY THIS EXISTS. The idle shutdown counts players as "clients WITHOUT a `performance` field",
+# on the understanding that a dedicated server lists itself in TheNet:GetClientTable() and that
+# its own entry is the one carrying `performance`. That is the one assumption in the idle logic
+# that only the live game can confirm, so this prints every entry with that field shown — run it
+# with someone connected and check the count matches, before trusting idle shutdown with a
+# session. It also shows the count the control endpoint derives, side by side.
+
+- name: Deployed?
+  ansible.builtin.include_tasks: _assert_deployed.yml
+
+- name: Observe the cluster
+  ansible.builtin.include_tasks: _observe.yml
+
+- name: Read the client table
+  when: _dst_obs.listening[_dst_masters[0].name] | default(false)
+  block:
+    - name: Make a nonce for this probe
+      ansible.builtin.set_fact:
+        _dst_nonce: "{{ lookup('ansible.builtin.password', '/dev/null', chars=['hexdigits'], length=12) | lower }}"
+
+    - name: Ask the master's console to print every client
+      ansible.builtin.command:
+        argv:
+          - "{{ dst_podman }}"
+          - exec
+          - "{{ _dst_masters[0].container }}"
+          - dst-console
+          - >-
+            for i,c in ipairs(TheNet:GetClientTable() or {}) do
+            print('DSTCTL-CLIENT {{ _dst_nonce }}', i, tostring(c.name), tostring(c.userid),
+            tostring(c.prefab), 'performance=' .. tostring(c.performance ~= nil)) end
+            print('DSTCTL-CLIENT {{ _dst_nonce }} end')
+      changed_when: false
+
+    - name: Read the answer from the master's log
+      ansible.builtin.command:
+        argv:
+          [
+            grep,
+            --fixed-strings,
+            "DSTCTL-CLIENT {{ _dst_nonce }}",
+            "{{ _dst_masters[0].path }}/server_log.txt",
+          ]
+      register: _dst_clients
+      until: _dst_clients.stdout is search('DSTCTL-CLIENT ' ~ _dst_nonce ~ ' end')
+      retries: 10
+      delay: 1
+      changed_when: false
+      failed_when: false
+      # guard-check: ignore UNTIL-01 — a READ-ONLY report, and the exhausted case is reported, not
+      # hidden: the Report task below prints "NO ANSWER from the console" when the end marker
+      # never arrived. Failing the play would only hide the partial table it did collect.
+
+- name: Report
+  ansible.builtin.debug:
+    msg:
+      - >-
+        {{ ('Client table (performance=true marks the server entry itself, which the idle count excludes):')
+           if _dst_clients.stdout_lines is defined else 'Master is not listening — start the cluster first.' }}
+      - "{{ _dst_clients.stdout_lines | default([]) | reject('search', ' end$') | list }}"
+      - >-
+        {{ 'NO ANSWER from the console within 10s — is dst_console_enabled true?'
+           if (_dst_clients.stdout_lines is defined and not (_dst_clients.stdout is search(' end')))
+           else '' }}
+      - "Control endpoint's count: {{ _dst_obs.players }} (via {{ _dst_obs.players_source }})"

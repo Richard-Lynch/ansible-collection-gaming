@@ -1,0 +1,35 @@
+# Offline scenario — converges the role's REAL cluster-file code (setup_vars.yml + config.yml)
+# on localhost, and renders its unit/script templates, with no podman, no systemd and no network.
+#
+# WHAT THIS TESTS, and why. The role's risk is all in TRANSLATION: inventory YAML -> DST's INI and
+# Lua files. A mod option rendered as the string "True", a caves shard written without its preset,
+# a disabled mod still downloaded — each is accepted by the game silently and does the wrong
+# thing. So converge.yml drives every option shape (two shards, a shard-restricted mod, a disabled
+# mod, a collection, a leveldata_override, INI extras, admin lists) through the real tasks, and
+# verify.yml asserts on the FILES. Molecule's idempotence step then proves an unchanged config
+# renders byte-identically (no timestamp in any header). The validation gates are exercised in
+# both directions: converge.yml includes the resolver with broken clusters and requires a FAIL.
+#
+# WHAT IT DOES NOT TEST: podman, systemd and the game itself — those need a real host (see the
+# README's "Validated" section), and are not reproducible in a CI container.
+---
+dependency:
+  name: galaxy
+driver:
+  name: default
+platforms:
+  - name: localhost
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: "${MOLECULE_PROJECT_DIRECTORY}/../"
+    ANSIBLE_COLLECTIONS_PATH: "${MOLECULE_PROJECT_DIRECTORY}/../../collections.galaxy:${MOLECULE_PROJECT_DIRECTORY}/../../../../.."
+  inventory:
+    host_vars:
+      localhost:
+        ansible_connection: local
+  playbooks:
+    converge: converge.yml
+    verify: verify.yml
+verifier:
+  name: ansible

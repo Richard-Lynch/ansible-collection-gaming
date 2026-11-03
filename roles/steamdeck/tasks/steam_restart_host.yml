@@ -1,0 +1,74 @@
+---
+# ENTRYPOINT: install the "restart Steam on the streaming host" script, for a Game Mode tile.
+#
+# The counterpart of wake_host: that one powers the host on, this one un-wedges a host that is ON
+# but offering this Deck nothing to stream (a stuck launch, or listeners that did not come back).
+# It calls a small Steam guard service on the host over HTTP (POST /steam/restart, GET /healthz),
+# which admits callers by an address allowlist rather than a credential.
+#
+# WRITES TO $HOME ONLY, unprivileged, and survives a SteamOS image update — the same reasons as
+# wake_host. The tile itself comes from steamdeck_managed_shortcuts via steamdeck_action=shortcuts
+# (which stops Steam ON THE DECK to write shortcuts.vdf).
+
+- name: Apply role defaults
+  ansible.builtin.include_tasks: setup_vars.yml
+
+- name: Assert the guard is declared
+  # Site configuration: which host, and where its guard listens, belongs in inventory.
+  ansible.builtin.assert:
+    that:
+      - steamdeck_steam_guard_url | default('') is match('^https?://')
+      - steamdeck_steam_guard_target | default('') | length > 0
+    fail_msg: >-
+      Declare steamdeck_steam_guard_url (e.g. http://<host name>:8090) and
+      steamdeck_steam_guard_target in inventory. Got url='{{ steamdeck_steam_guard_url | default('') }}'
+      target='{{ steamdeck_steam_guard_target | default('') }}'.
+    quiet: true
+
+- name: Derive the script location
+  ansible.builtin.set_fact:
+    _sd_restart_script: "{{ ansible_env.HOME }}/.local/bin/iaac-restart-host-steam.sh"
+
+- name: Ensure the script directory exists
+  ansible.builtin.file:
+    path: "{{ _sd_restart_script | dirname }}"
+    state: directory
+    mode: "0755"
+
+- name: Install the restart script
+  ansible.builtin.template:
+    src: restart-host-steam.sh.j2
+    dest: "{{ _sd_restart_script }}"
+    mode: "0755"
+  register: _sd_restart_installed
+
+- name: Check the guard answers THIS Deck
+  # FROM the Deck, so it proves the two things a press depends on: the name resolves on the
+  # Deck's current VLAN, and the guard's allowlist admits the Deck's current address. /healthz,
+  # never /steam/restart — installing the button must not press it.
+  ansible.builtin.uri:
+    url: "{{ steamdeck_steam_guard_url | regex_replace('/+$', '') }}/healthz"
+    return_content: true
+    status_code: [200, 403]
+    timeout: 8
+  register: _sd_guard_check
+  failed_when: false
+  changed_when: false
+
+- name: Report
+  ansible.builtin.debug:
+    msg:
+      - >-
+        {{ 'Installed' if (_sd_restart_installed is changed) else 'Already current' }}:
+        {{ _sd_restart_script }}
+      - >-
+        {{ ('GUARD OK from this Deck (' ~ ansible_all_ipv4_addresses | join(', ') ~ '): '
+            ~ (_sd_guard_check.content | from_json).verdict ~ ', mode '
+            ~ (_sd_guard_check.content | from_json).mode)
+           if (_sd_guard_check.status | default(0)) == 200
+           else ('GUARD REFUSES THIS DECK (403) — its address is not on the guard allowlist: '
+                 ~ (_sd_guard_check.content | default('')))
+           if (_sd_guard_check.status | default(0)) == 403
+           else ('GUARD UNREACHABLE (' ~ (_sd_guard_check.msg | default('no response')) ~ ') — '
+                 ~ 'a press will fail until the guard is installed and the name resolves.') }}
+      - "Run log on the device: $HOME/.local/share/iaac-restart-host-steam.log"

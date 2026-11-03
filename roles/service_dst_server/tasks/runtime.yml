@@ -1,0 +1,336 @@
+---
+# The cluster's RUNTIME: the container image, the host scripts, the systemd --user units and the
+# control endpoint. Runs after config.yml in `deploy`.
+#
+# Same generate-don't-apply contract as config.yml: without dst_apply every write is previewed in
+# check mode with a diff, and nothing is built, enabled or started.
+#
+# A RUNNING SERVER IS NEVER RESTARTED BY A DEPLOY. Restarting it would drop everyone playing. A
+# deploy that changed anything the running shards read reports "restart to apply" and leaves the
+# restart to dst_action=restart, a deliberate act. (The game reads its config at start only — the
+# config-on-disk-vs-running-process trap — so the report says which one you are looking at.)
+
+- name: Read what is already on disk
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    [
+      "{{ _dst_dirs.build }}",
+      "{{ _dst_dirs.bin }}",
+      "{{ _dst_dirs.state }}",
+      "{{ _dst_unit_dir }}",
+    ]
+  register: _dst_rt_existing
+
+- name: Index existing directories
+  ansible.builtin.set_fact:
+    _dst_rt_exists: >-
+      {{ _dst_rt_existing.results | selectattr('stat.exists') | map(attribute='item') | list }}
+
+- name: Create the unit directory
+  ansible.builtin.file:
+    path: "{{ _dst_unit_dir }}"
+    state: directory
+    mode: "0755"
+  when: dst_apply | bool
+
+# ------------------------------------------------------------------------------- image
+- name: Stage the image build context
+  ansible.builtin.copy:
+    src: "image/{{ item }}"
+    dest: "{{ _dst_dirs.build }}/{{ item }}"
+    mode: "0755"
+  loop: [dst-shard.sh, dst-console.sh, dst-prepare.sh]
+  diff: true
+  check_mode: "{{ not (dst_apply | bool) }}"
+  when: dst_apply | bool or _dst_dirs.build in _dst_rt_exists
+
+- name: Write the Containerfile
+  ansible.builtin.template:
+    src: Containerfile.j2
+    dest: "{{ _dst_dirs.build }}/Containerfile"
+    mode: "0644"
+  diff: true
+  check_mode: "{{ not (dst_apply | bool) }}"
+  when: dst_apply | bool or _dst_dirs.build in _dst_rt_exists
+
+- name: Is the image for these build inputs already present?
+  ansible.builtin.command:
+    argv: ["{{ dst_podman }}", image, exists, "{{ _dst_image }}"]
+  register: _dst_image_exists
+  changed_when: false
+  failed_when: _dst_image_exists.rc not in [0, 1]
+
+- name: Build the image
+  # Only when this exact tag is absent: the tag IS the hash of the build inputs (setup), so an
+  # unchanged Containerfile never rebuilds and a changed one always does. --pull=newer refreshes
+  # the base image at the same moment, and never otherwise.
+  ansible.builtin.command:
+    argv:
+      - "{{ dst_podman }}"
+      - build
+      - --pull=newer
+      - --tag
+      - "{{ _dst_image }}"
+      - --file
+      - "{{ _dst_dirs.build }}/Containerfile"
+      - "{{ _dst_dirs.build }}"
+  when:
+    - dst_apply | bool
+    - _dst_image_exists.rc == 1
+  changed_when: true
+  register: _dst_image_built
+
+- name: HARD GATE — the image the units will run must exist
+  ansible.builtin.command:
+    argv:
+      [
+        "{{ dst_podman }}",
+        image,
+        inspect,
+        --format,
+        "{{ '{{' }}.Id{{ '}}' }}",
+        "{{ _dst_image }}",
+      ]
+  register: _dst_image_inspect
+  changed_when: false
+  when: dst_apply | bool
+
+# ------------------------------------------------------------------------------- host scripts
+- name: Install the host scripts
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "{{ _dst_dirs.bin }}/{{ item }}"
+    mode: "0755"
+  loop: [dst-prepare-host.sh, dst-backup.sh]
+  diff: true
+  check_mode: "{{ not (dst_apply | bool) }}"
+  when: dst_apply | bool or _dst_dirs.bin in _dst_rt_exists
+  register: _dst_rt_scripts
+
+- name: Install the control endpoint
+  ansible.builtin.copy:
+    src: dst_control.py
+    dest: "{{ _dst_dirs.bin }}/dst_control.py"
+    mode: "0755"
+  check_mode: "{{ not (dst_apply | bool) }}"
+  when: dst_apply | bool or _dst_dirs.bin in _dst_rt_exists
+  register: _dst_rt_control_py
+
+- name: Write the control endpoint's configuration
+  ansible.builtin.copy:
+    dest: "{{ _dst_dirs.state }}/control.json"
+    mode: "0640"
+    content: >-
+      {{ {
+           'instance': dst_instance,
+           'target': _dst_target,
+           'prepare_unit': _dst_prepare_unit,
+           'port': dst_control_port | int,
+           'allow': dst_control_allow,
+           'interval': dst_control_interval | int,
+           'idle_minutes': dst_idle_shutdown_minutes | int,
+           'grace_minutes': dst_idle_startup_grace_minutes | int,
+           'mode': dst_idle_shutdown_mode,
+           'podman': dst_podman,
+           'state_file': _dst_dirs.state ~ '/control-state.json',
+           'shards': _dst_enabled_shards | map('richard_lynch.gaming.dst_control_shard', _dst_cluster_path) | list,
+         } | to_nice_json(indent=2) }}
+  diff: true
+  check_mode: "{{ not (dst_apply | bool) }}"
+  when: dst_apply | bool or _dst_dirs.state in _dst_rt_exists
+  register: _dst_rt_control_cfg
+
+# ------------------------------------------------------------------------------- units
+- name: Install the prepare unit
+  ansible.builtin.template:
+    src: dst-prepare.service.j2
+    dest: "{{ _dst_unit_dir }}/{{ _dst_prepare_unit }}"
+    mode: "0644"
+  diff: true
+  check_mode: "{{ not (dst_apply | bool) }}"
+  when: dst_apply | bool or _dst_unit_dir in _dst_rt_exists
+  register: _dst_u_prepare
+
+- name: Install one unit per shard
+  ansible.builtin.template:
+    src: dst-shard.service.j2
+    dest: "{{ _dst_unit_dir }}/{{ shard.unit }}"
+    mode: "0644"
+  loop: "{{ _dst_shards }}"
+  loop_control:
+    loop_var: shard
+    label: "{{ shard.unit }}"
+  diff: true
+  check_mode: "{{ not (dst_apply | bool) }}"
+  when: dst_apply | bool or _dst_unit_dir in _dst_rt_exists
+  register: _dst_u_shards
+
+- name: Install the cluster target
+  ansible.builtin.template:
+    src: dst.target.j2
+    dest: "{{ _dst_unit_dir }}/{{ _dst_target }}"
+    mode: "0644"
+  diff: true
+  check_mode: "{{ not (dst_apply | bool) }}"
+  when: dst_apply | bool or _dst_unit_dir in _dst_rt_exists
+  register: _dst_u_target
+
+- name: Install the control unit
+  ansible.builtin.template:
+    src: dst-control.service.j2
+    dest: "{{ _dst_unit_dir }}/{{ _dst_control_unit }}"
+    mode: "0644"
+  diff: true
+  check_mode: "{{ not (dst_apply | bool) }}"
+  when: dst_apply | bool or _dst_unit_dir in _dst_rt_exists
+  register: _dst_u_control
+
+- name: Find shard units this instance no longer declares
+  # A renamed or removed shard leaves its old unit behind; the target no longer Wants it, but a
+  # stale unit is still startable and still read by `status`. Only <instance>-*.service files are
+  # considered, and the prepare/control units are never candidates.
+  ansible.builtin.find:
+    paths: "{{ _dst_unit_dir }}"
+    patterns: "{{ dst_instance }}-*.service"
+  register: _dst_u_found
+
+- name: Remove stale shard units
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop: >-
+    {{ _dst_u_found.files | map(attribute='path') | map('basename')
+       | difference(_dst_shards | map(attribute='unit') | list
+                    + [_dst_prepare_unit, _dst_control_unit])
+       | map('regex_replace', '^', _dst_unit_dir ~ '/') | list }}
+  check_mode: "{{ not (dst_apply | bool) }}"
+  register: _dst_u_stale
+
+- name: Reload the user manager
+  # Only when a unit file actually changed — an honest no-op otherwise.
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+    scope: user
+  when:
+    - dst_apply | bool
+    - (_dst_u_prepare is changed) or (_dst_u_shards is changed) or (_dst_u_target is changed)
+      or (_dst_u_control is changed) or (_dst_u_stale is changed)
+
+- name: Converge the cluster target's autostart
+  # Enabled ONLY for dst_autostart. Neither branch starts or stops it: whether the server is
+  # running right now is the start/stop actions' business, not the deploy's.
+  ansible.builtin.systemd_service:
+    name: "{{ _dst_target }}"
+    scope: user
+    enabled: "{{ dst_autostart | bool }}"
+  when: dst_apply | bool
+
+- name: Converge the control endpoint
+  ansible.builtin.systemd_service:
+    name: "{{ _dst_control_unit }}"
+    scope: user
+    enabled: "{{ dst_control_enabled | bool }}"
+    state: >-
+      {{ ('restarted' if (_dst_u_control is changed or _dst_rt_control_py is changed
+                          or _dst_rt_control_cfg is changed) else 'started')
+         if (dst_control_enabled | bool) else 'stopped' }}
+  when: dst_apply | bool
+
+- name: Read the control endpoint back through its own API
+  # Proves it is listening AND judging live state, not merely that its unit is active. From the
+  # host itself — 127.0.0.1 is always allowed. A remote client's reach is the client's to check.
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ dst_control_port }}/healthz"
+    return_content: true
+    timeout: 10
+  register: _dst_rt_health
+  until: >-
+    (_dst_rt_health.status | default(0)) == 200
+    and (_dst_rt_health.content | from_json).idle.verdict != 'starting'
+    or (_dst_rt_health.status | default(0)) == 200
+    and (_dst_rt_health.content | from_json).state == 'stopped'
+  retries: 12
+  delay: 5
+  changed_when: false
+  when:
+    - dst_apply | bool
+    - dst_control_enabled | bool
+
+- name: The control endpoint must be serving this instance
+  ansible.builtin.assert:
+    that:
+      - _h.instance == dst_instance
+      - _h.target == _dst_target
+      - _h.idle.mode == dst_idle_shutdown_mode
+      - _h.idle.minutes == (dst_idle_shutdown_minutes | int)
+    fail_msg: "Control endpoint is not serving the declared configuration: {{ _h }}"
+    success_msg: "Control endpoint up: state={{ _h.state }} idle={{ _h.idle }}"
+    quiet: true
+  vars:
+    _h: "{{ _dst_rt_health.content | from_json }}"
+  when:
+    - dst_apply | bool
+    - dst_control_enabled | bool
+
+# ------------------------------------------------------------------------------- host integration
+- name: Enable lingering for the server's user
+  # Needs root. `loginctl enable-linger` is idempotent, but its output does not say whether it
+  # changed anything, so the change is decided from a read-back of the property before it.
+  when: dst_linger | bool
+  block:
+    - name: Read the current linger state
+      ansible.builtin.command:
+        argv:
+          [
+            loginctl,
+            show-user,
+            "{{ ansible_user_id }}",
+            --property=Linger,
+            --value,
+          ]
+      register: _dst_linger_before
+      changed_when: false
+
+    - name: Enable lingering
+      ansible.builtin.command:
+        argv: [loginctl, enable-linger, "{{ ansible_user_id }}"]
+      become: true
+      when:
+        - dst_apply | bool
+        - _dst_linger_before.stdout | trim != 'yes'
+      changed_when: true
+
+- name: Open the shards' UDP ports in firewalld
+  ansible.posix.firewalld:
+    port: "{{ item }}/udp"
+    zone: "{{ dst_firewalld_zone if (dst_firewalld_zone | length > 0) else omit }}"
+    permanent: true
+    immediate: true
+    state: enabled
+  loop: >-
+    {{ (_dst_enabled_shards | map(attribute='server_port') | list)
+       + (_dst_enabled_shards | map(attribute='master_server_port') | list)
+       + (_dst_enabled_shards | map(attribute='authentication_port') | list) }}
+  become: true
+  check_mode: "{{ not (dst_apply | bool) }}"
+  when: dst_firewalld_manage | bool
+
+- name: Open the control endpoint's TCP port in firewalld
+  ansible.posix.firewalld:
+    port: "{{ dst_control_port }}/tcp"
+    zone: "{{ dst_firewalld_zone if (dst_firewalld_zone | length > 0) else omit }}"
+    permanent: true
+    immediate: true
+    state: enabled
+  become: true
+  check_mode: "{{ not (dst_apply | bool) }}"
+  when:
+    - dst_firewalld_manage | bool
+    - dst_control_enabled | bool
+
+- name: Summarise what the runtime would change
+  ansible.builtin.set_fact:
+    _dst_runtime_changed: >-
+      {{ [_dst_image_built | default({}), _dst_rt_scripts, _dst_u_prepare, _dst_u_shards,
+          _dst_u_target, _dst_u_stale] | select('changed') | list | length > 0 }}

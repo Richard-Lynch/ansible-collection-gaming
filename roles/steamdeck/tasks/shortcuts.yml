@@ -1,0 +1,215 @@
+---
+# ENTRYPOINT: write the Game Mode tiles declared in steamdeck_managed_shortcuts, plus — when a
+# streaming host is named — one tile per Sunshine app, so each streams directly.
+#
+# REMOVAL IS BY OMISSION. Every iaac-tagged entry that is not in the desired list is removed
+# (files/steam_shortcuts_merge.py, "remove <name>" in the plan). There is no tombstone: to take a
+# tile away, delete its declaration and re-run; to bring it back, declare it again.
+#
+# STREAM TILES ARE OPTIONAL. With steamdeck_stream_host set, Moonlight's `stream <host> "<app>"`
+# gives each Sunshine app its own tile. The apps are steamdeck_stream_apps, which inventory should
+# point at the host's own app list rather than a second list that would drift. Left empty (the
+# default), no stream tiles are generated — and any previously generated ones are removed like
+# any other omission.
+#
+# ONLY TAGGED ENTRIES ARE MANAGED. Untagged shortcuts — EmuDeck's Steam ROM Manager tiles
+# (RetroArch, per-ROM launchers), anything added on the device — keep their own controller
+# layouts and artwork and are passed through untouched: reconciling the whole file would delete
+# another tool's or a person's work, which is worse than doing nothing. The plan names who owns
+# each one (steamdeck_shortcut_owners), or says the origin is unknown.
+#
+# STEAM MUST BE STOPPED. It rewrites shortcuts.vdf on exit, so an edit made while it is running
+# is discarded silently, long after this play reports success.
+
+- name: Apply role defaults
+  ansible.builtin.include_tasks: setup_vars.yml
+
+- name: Read the current shortcuts
+  ansible.builtin.include_tasks: shortcuts_report.yml
+
+- name: Assert a named streaming host is in the inventory
+  # Optional, but a NAME that does not resolve to an inventory host would silently yield zero
+  # stream tiles — and the merge would then remove every existing one.
+  ansible.builtin.assert:
+    that:
+      - steamdeck_stream_host in hostvars
+    fail_msg: >-
+      steamdeck_stream_host is '{{ steamdeck_stream_host }}', which is not an inventory host.
+      Name the Sunshine host's inventory entry, or leave it empty for no stream tiles.
+    quiet: true
+  when: steamdeck_stream_host | length > 0
+
+- name: Start from the shortcuts declared in inventory
+  # Explicitly-declared entries (Chrome, EmuDeck, the DST play tile) come first; the generated stream
+  # tiles are appended below. Both end up in one list so a single merge decides the whole
+  # managed set — two separate merges would each see the other's entries as strangers.
+  ansible.builtin.set_fact:
+    _sd_desired: "{{ steamdeck_managed_shortcuts | default([]) }}"
+
+- name: Compose the desired shortcut list
+  ansible.builtin.set_fact:
+    _sd_desired: >-
+      {{ _sd_desired + [{
+           'name': steamdeck_stream_prefix ~ item.name,
+           'exe': '"/usr/bin/flatpak"',
+           'start_dir': '"/usr/bin/"',
+           'launch_options': 'run --branch=stable com.moonlight_stream.Moonlight stream '
+                             ~ _sd_host_name ~ ' "' ~ item.name ~ '"'
+                             ~ (' --fps ' ~ steamdeck_moonlight_fps | string if (steamdeck_moonlight_fps | int) > 0 else '')
+                             ~ (' --bitrate ' ~ steamdeck_moonlight_bitrate | string if (steamdeck_moonlight_bitrate | int) > 0 else ''),
+           'flatpak_app_id': 'com.moonlight_stream.Moonlight',
+           'shortcut_path': '/var/lib/flatpak/exports/share/applications/com.moonlight_stream.Moonlight.desktop',
+           'sort_as': steamdeck_stream_prefix ~ item.name,
+         }] }}
+  loop: "{{ steamdeck_stream_apps }}"
+  loop_control:
+    label: "{{ steamdeck_stream_prefix }}{{ item.name }}"
+  when: steamdeck_stream_host | length > 0
+  vars:
+    # The host's INVENTORY ansible_host, and it must be a NAME. Taking whatever ansible_host
+    # currently holds is wrong when a run overrides it with an address to work around DNS: the
+    # override then gets baked into a shortcut that outlives the run, as a hardcoded address.
+    _sd_host_name: "{{ hostvars[steamdeck_stream_host].ansible_host | default(steamdeck_stream_host) }}"
+
+- name: Assert the stream host resolves to a NAME, not an address
+  # A shortcut outlives the run that created it, so an address baked in here breaks the next
+  # time the host renumbers — and unlike Moonlight's own config there is no discovery to fall
+  # back on. Catches an ansible_host override leaking into persistent config.
+  ansible.builtin.assert:
+    that:
+      - not (_sd_host_check is match('^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'))
+    fail_msg: >-
+      The stream host resolves to '{{ _sd_host_check }}', an IP address. Shortcuts must use a
+      DNS name — an address here is baked into persistent config and breaks on renumber.
+      This usually means ansible_host was overridden on the command line; fix DNS instead.
+    quiet: true
+  vars:
+    _sd_host_check: "{{ hostvars[steamdeck_stream_host].ansible_host | default(steamdeck_stream_host) }}"
+  when: steamdeck_stream_host | length > 0
+
+- name: Merge the shortcuts (report only)
+  ansible.builtin.script:
+    cmd: "steam_shortcuts_merge.py --path '{{ _sd_shortcuts_path }}' --desired '{{ _sd_desired | to_json }}'"
+    executable: /usr/bin/python3
+  register: _sd_merge_dry
+  changed_when: false
+
+- name: Report the plan
+  ansible.builtin.debug:
+    msg: "{{ _report.splitlines() }}"
+  vars:
+    _m: "{{ _sd_merge_dry.stdout[_sd_merge_dry.stdout.find('{') :] | from_json }}"
+    # The "left alone" list is the entries the merge passes through: untagged, and not claimed
+    # by an `adopt: true` declaration (the merge tool's own `kept` rule). Each is labelled from
+    # _sd_sc_owners — the attribution shortcuts_report already computed — so the plan and the
+    # report cannot name different owners for the same tile.
+    _adopt: >-
+      {{ steamdeck_managed_shortcuts | selectattr('adopt', 'defined') | selectattr('adopt')
+         | map(attribute='name') | list }}
+    _report: |
+      ===== SHORTCUT PLAN =====
+      {{ 'APPLYING' if (steamdeck_apply | bool) else 'WOULD APPLY' }} to {{ _sd_shortcuts_path }}
+
+      changes ({{ _m.changes | length }}):
+      {% for c in _m.changes %}
+        - {{ c }}
+      {% endfor %}
+      {{ '  (nothing to do)' if (_m.changes | length) == 0 else '' }}
+
+      after: {{ _m.total }} shortcuts — {{ _m.managed }} managed, {{ _m.unmanaged }} left alone
+      {% for idx, sc in (_sd_sc.shortcuts | default({})).items() | sort(attribute='0') %}
+      {% if not _sd_sc_owners[idx].startswith('yes') and sc.AppName | default('') not in _adopt %}
+        - {{ sc.AppName | default('(unnamed)') }}: managed: {{ _sd_sc_owners[idx] }}
+      {% endif %}
+      {% endfor %}
+      {{ '' if (steamdeck_apply | bool) else 'Re-run with steamdeck_apply=true.' }}
+
+- name: Stop Steam before editing its config
+  # Steam rewrites shortcuts.vdf on exit. An edit made while it runs is discarded silently —
+  # the play reports success and the tiles never appear.
+  ansible.builtin.command:
+    cmd: pkill -x steam
+  register: _sd_steam_kill
+  changed_when: (_sd_steam_kill.rc | int) == 0
+  failed_when: false
+  when:
+    - steamdeck_apply | bool
+    - (_sd_merge_dry.stdout[_sd_merge_dry.stdout.find('{') :] | from_json).changed | bool
+
+- name: Wait for Steam to exit
+  # Steam takes a few seconds to flush and close. Writing while it is still shutting down loses
+  # the edit to its own final write.
+  ansible.builtin.wait_for:
+    timeout: "{{ steamdeck_steam_stop_wait | int }}"
+  when:
+    - steamdeck_apply | bool
+    - _sd_steam_kill.changed | default(false)
+
+- name: Apply the shortcuts
+  ansible.builtin.script:
+    cmd: "steam_shortcuts_merge.py --path '{{ _sd_shortcuts_path }}' --desired '{{ _sd_desired | to_json }}' --apply"
+    executable: /usr/bin/python3
+  register: _sd_merge
+  changed_when: (_sd_merge.stdout[_sd_merge.stdout.find('{') :] | from_json).applied | bool
+  when:
+    - steamdeck_apply | bool
+    - (_sd_merge_dry.stdout[_sd_merge_dry.stdout.find('{') :] | from_json).changed | bool
+
+- name: Read the shortcuts back
+  # From the file, not from the merge tool's own report: it says what it wrote, which proves
+  # nothing about what Steam will read.
+  ansible.builtin.script:
+    cmd: "steam_shortcuts.py --path '{{ _sd_shortcuts_path }}' --mode read"
+    executable: /usr/bin/python3
+  register: _sd_after_raw
+  changed_when: false
+  when: steamdeck_apply | bool
+
+- name: Assert every managed shortcut is present
+  ansible.builtin.assert:
+    that:
+      - _sd_names | select('equalto', item.name) | list | length == 1
+    fail_msg: >-
+      '{{ item.name }}' is not in the shortcuts file after writing.
+      Present: {{ _sd_names | join(', ') }}
+    quiet: true
+  loop: "{{ _sd_desired }}"
+  loop_control:
+    label: "{{ item.name }}"
+  vars:
+    _sd_names: >-
+      {{ (_sd_after_raw.stdout[_sd_after_raw.stdout.find('{') :] | from_json).shortcuts.values()
+         | map(attribute='AppName') | list }}
+  when: steamdeck_apply | bool
+
+- name: Assert the unmanaged shortcuts survived
+  # THE GUARD THAT MATTERS. A merge bug presents as shortcuts quietly vanishing from the library
+  # — noticed days later, with the controller layouts and artwork they carried unrecoverable.
+  #
+  # Compares the merge tool's OWN before/after counts rather than recomputing "unmanaged" here:
+  # the tool decides what managed means, and a second implementation of that rule in Jinja would
+  # be a different definition that happens to agree until it does not.
+  ansible.builtin.assert:
+    that:
+      - (_sd_after.unmanaged | int) == (_sd_before.unmanaged | int)
+    fail_msg: >-
+      Unmanaged shortcuts went from {{ _sd_before.unmanaged }} to {{ _sd_after.unmanaged }} —
+      the merge removed entries it does not own. shortcuts.vdf is replaced atomically, so the
+      previous file is gone; restore from a Steam Cloud sync or re-add by hand.
+    quiet: true
+  vars:
+    _sd_before: "{{ _sd_merge_dry.stdout[_sd_merge_dry.stdout.find('{') :] | from_json }}"
+    _sd_after: "{{ _sd_merge.stdout[_sd_merge.stdout.find('{') :] | from_json }}"
+  when:
+    - steamdeck_apply | bool
+    - _sd_merge.changed | default(false)
+
+- name: Confirm
+  ansible.builtin.debug:
+    msg: >-
+      {{ (_sd_merge.stdout[_sd_merge.stdout.find('{') :] | from_json).changes | length }}
+      shortcut(s) changed. Steam was stopped for the edit — RESTART IT (or reboot to Game Mode)
+      for the change to show.
+  when:
+    - steamdeck_apply | bool
+    - _sd_merge.changed | default(false)

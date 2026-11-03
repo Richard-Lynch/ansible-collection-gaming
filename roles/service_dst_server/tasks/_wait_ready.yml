@@ -1,0 +1,59 @@
+---
+# Wait for every enabled shard to be listening, then fail LOUDLY with the evidence if not.
+
+- name: Poll until every shard is listening
+  ansible.builtin.command:
+    argv:
+      - "{{ dst_python }}"
+      - "{{ _dst_dirs.bin }}/dst_control.py"
+      - --config
+      - "{{ _dst_dirs.state }}/control.json"
+      - --once
+  register: _dst_ready_raw
+  until: >-
+    (_dst_ready_raw.rc == 0 and (_dst_ready_raw.stdout | from_json).ready)
+    or (_dst_ready_raw.rc == 0 and (_dst_ready_raw.stdout | from_json).state in ['failed', 'stopped'])
+  retries: "{{ ((dst_start_timeout | int) / 10) | round(0, 'ceil') | int }}"
+  delay: 10
+  changed_when: false
+  failed_when: false
+
+- name: HARD GATE — the observer itself must have run
+  # The poll above tolerates failures so a slow start can keep retrying; an observer that never
+  # produced a reading is a different failure from "not ready", and must not read as one.
+  ansible.builtin.assert:
+    that:
+      - _dst_ready_raw.rc == 0
+    fail_msg: "dst_control.py --once failed (rc {{ _dst_ready_raw.rc }}): {{ _dst_ready_raw.stderr | default('') }}"
+    quiet: true
+
+- name: Parse the last observation
+  ansible.builtin.set_fact:
+    _dst_obs: "{{ _dst_ready_raw.stdout | from_json }}"
+
+- name: On failure, collect what the units and the shards said
+  when: not _dst_obs.ready
+  block:
+    - name: Read the units' journal
+      ansible.builtin.command:
+        argv: >-
+          {{ ['journalctl', '--user', '--no-pager', '--output=short-iso', '-n', '60',
+              '-u', _dst_prepare_unit]
+             + (_dst_enabled_shards | map(attribute='unit') | map('regex_replace', '^', '--unit=') | list) }}
+      register: _dst_fail_journal
+      changed_when: false
+      failed_when: false
+
+    - name: Read the master's server log
+      ansible.builtin.command:
+        argv: [tail, -n, "40", "{{ _dst_masters[0].path }}/server_log.txt"]
+      register: _dst_fail_log
+      changed_when: false
+      failed_when: false
+
+    - name: HARD GATE — the cluster did not become joinable
+      ansible.builtin.fail:
+        msg:
+          - "Not joinable after {{ dst_start_timeout }}s: state={{ _dst_obs.state }} units={{ _dst_obs.units }} listening={{ _dst_obs.listening }}"
+          - "journal (last 60): {{ _dst_fail_journal.stdout_lines | default([]) }}"
+          - "master server_log.txt (last 40): {{ _dst_fail_log.stdout_lines | default(['(none)']) }}"

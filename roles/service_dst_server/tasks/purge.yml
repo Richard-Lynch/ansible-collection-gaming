@@ -1,0 +1,61 @@
+---
+# ENTRYPOINT: wipe this instance's ENTIRE data root — installed server, steamcmd state, worlds,
+# mods, backups — so the next deploy + start builds it from nothing.
+#
+#   dst_action=purge dst_purge_confirm=dst
+#
+# IRREVERSIBLE, and that is the point: it exists for "start clean, bring nothing forward". Every
+# other action in this role keeps worlds and backups; this one deletes them too. Typing the
+# instance name is the confirmation. Units, the control endpoint and the image are KEPT, so a
+# deploy (dst_apply=true) then a start is all a fresh cluster needs.
+#
+# For example when an existing install can no longer be updated by steamcmd (state 0x6) and a clean
+# regeneration is preferred over salvage.
+
+- name: HARD GATE — confirmed by instance name
+  ansible.builtin.assert:
+    that:
+      - dst_purge_confirm == dst_instance
+      - _dst_root | length > 10
+      - _dst_root is search('/' ~ dst_instance ~ '$')
+    fail_msg: >-
+      Set dst_purge_confirm={{ dst_instance }} to DELETE everything under {{ _dst_root }}
+      (worlds and backups included). Got '{{ dst_purge_confirm }}'.
+    quiet: true
+
+- name: Is the target installed?
+  ansible.builtin.stat:
+    path: "{{ _dst_unit_dir }}/{{ _dst_target }}"
+  register: _dst_purge_target
+
+- name: Stop the cluster first
+  ansible.builtin.include_tasks: stop.yml
+  when: _dst_purge_target.stat.exists
+
+- name: Delete the data root
+  # A rootless container wrote these files as the container's root, which maps to THIS user, so an
+  # ordinary unprivileged delete removes them. `podman unshare` covers anything written under a
+  # SUBordinate uid inside the user namespace, which a plain rm would be refused.
+  ansible.builtin.command:
+    argv:
+      [
+        "{{ dst_podman }}",
+        unshare,
+        rm,
+        -rf,
+        --one-file-system,
+        "{{ _dst_root }}",
+      ]
+    removes: "{{ _dst_root }}"
+
+- name: HARD GATE — the data root is gone
+  ansible.builtin.stat:
+    path: "{{ _dst_root }}"
+  register: _dst_purge_after
+  failed_when: _dst_purge_after.stat.exists
+
+- name: Report
+  ansible.builtin.debug:
+    msg: >-
+      Purged {{ _dst_root }}. Next: dst_action=deploy dst_apply=true, then dst_action=start —
+      a fresh install of the current build and a newly generated world.

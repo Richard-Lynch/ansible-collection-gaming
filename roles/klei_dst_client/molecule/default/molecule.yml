@@ -1,0 +1,27 @@
+# Offline scenario — converges the REAL role on localhost against a fixture home holding a
+# Proton-style DST client save: the find paths, the game-running gate, the modindex editor, the
+# cluster_token reader (found, newest wins, refused when absent) and reset_crash_marker (rewrites
+# "loading", leaves "done" byte-identical). verify.yml asserts on the files.
+#
+# WHAT IT DOES NOT TEST: the game itself reading the edited state.
+---
+dependency:
+  name: galaxy
+driver:
+  name: default
+platforms:
+  - name: localhost
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: "${MOLECULE_PROJECT_DIRECTORY}/../"
+    ANSIBLE_COLLECTIONS_PATH: "${MOLECULE_PROJECT_DIRECTORY}/../../collections.galaxy:${MOLECULE_PROJECT_DIRECTORY}/../../../../.."
+  inventory:
+    host_vars:
+      localhost:
+        ansible_connection: local
+  playbooks:
+    converge: converge.yml
+    verify: verify.yml
+verifier:
+  name: ansible

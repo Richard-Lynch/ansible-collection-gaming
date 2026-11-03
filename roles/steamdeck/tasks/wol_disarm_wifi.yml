@@ -1,0 +1,124 @@
+---
+# ENTRYPOINT: disarm PCIe wakeup on the WiFi adapter. Reports by default; writes with
+# steamdeck_apply=true.
+#
+# WHY THIS EXISTS AS ITS OWN ACTION. wol_report and wol_persist both only ever ENABLE wakeup —
+# that is their job, and it is the right default for the wired chain. But an earlier version of
+# the udev rule also armed the Qualcomm QCNFA765 "for completeness of the chain", and a sysfs
+# `power/wakeup` value set that way SURVIVES until the device is re-added or the machine
+# reboots. So correcting the rule fixes every future boot and leaves the current one armed, with
+# nothing in the role able to undo it.
+#
+# WHAT IT BUYS: nothing, and that is the point. Wake-on-WiFi does not work on this hardware at
+# all — ath11k gates WoWLAN behind a device allowlist the Deck is not on — so an armed WiFi
+# wakeup source can never wake the device on a magic packet, while still being a wakeup source
+# that ordinary PCIe link activity can trigger. All cost, no benefit.
+#
+# NOT A FIX FOR SPURIOUS RESUMES. Those come from armed internal USB hubs (wol_disarm_internal);
+# this is removed on the merits.
+#
+# MATCHED BY DRIVER, never by PCI address. `0000:03:00.0` is board-specific and the interface
+# name varies; the driver is what actually determines WoWLAN support.
+
+- name: Apply role defaults
+  ansible.builtin.include_tasks: setup_vars.yml
+
+- name: Find the WiFi interface's wakeup links
+  # Walks from the wifi netdev up through every parent carrying a power/wakeup node — the same
+  # traversal wol_report does, restricted to the ath11k interface.
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -o pipefail
+      for iface in $(ls /sys/class/net | grep -v '^lo$'); do
+        dev=$(readlink -f "/sys/class/net/$iface/device" 2>/dev/null) || continue
+        drv=$(basename "$(readlink -f "/sys/class/net/$iface/device/driver" 2>/dev/null)" 2>/dev/null)
+        case "$drv" in ath11k*) ;; *) continue ;; esac
+        d="$dev"
+        while [ -n "$d" ] && [ "$d" != "/" ]; do
+          if [ -f "$d/power/wakeup" ]; then
+            printf '%s=%s\n' "$d" "$(cat "$d/power/wakeup")"
+          fi
+          d=$(dirname "$d")
+        done
+      done
+  register: _sd_wifi_links
+  changed_when: false
+
+- name: Report the plan
+  ansible.builtin.debug:
+    msg: >-
+      {{ (_armed | length) }} WiFi wakeup link(s) armed{{ ': ' ~ (_armed | map('basename') | join(', ')) if _armed else '' }}.
+      {{ ('WOULD disarm. Re-run with steamdeck_apply=true.' if not (steamdeck_apply | bool) else 'Disarming.')
+         if _armed else 'Nothing to do.' }}
+  vars:
+    _armed: >-
+      {{ _sd_wifi_links.stdout_lines | select('search', '=enabled')
+         | map('regex_replace', '=enabled$', '') | list }}
+
+- name: Disarm them
+  # A plain sysfs write, needing root. Each path came from the read above rather than being
+  # hardcoded, so this cannot touch a link that is not the WiFi adapter's.
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -o pipefail
+      changed=0
+      for link in {{ _armed | map('quote') | join(' ') }}; do
+        if [ "$(cat "$link/power/wakeup")" = "enabled" ]; then
+          echo disabled > "$link/power/wakeup" && changed=$((changed+1))
+        fi
+      done
+      echo "CHANGED=$changed"
+  become: true
+  register: _sd_wifi_disarm
+  changed_when: "'CHANGED=0' not in _sd_wifi_disarm.stdout"
+  vars:
+    _armed: >-
+      {{ _sd_wifi_links.stdout_lines | select('search', '=enabled')
+         | map('regex_replace', '=enabled$', '') | list }}
+  when:
+    - steamdeck_apply | bool
+    - _armed | length > 0
+
+- name: Read the state back
+  # From sysfs, not from the write's exit status: a driver can accept a write and ignore it, so
+  # only the read-back is evidence.
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -o pipefail
+      for iface in $(ls /sys/class/net | grep -v '^lo$'); do
+        dev=$(readlink -f "/sys/class/net/$iface/device" 2>/dev/null) || continue
+        drv=$(basename "$(readlink -f "/sys/class/net/$iface/device/driver" 2>/dev/null)" 2>/dev/null)
+        case "$drv" in ath11k*) ;; *) continue ;; esac
+        d="$dev"
+        while [ -n "$d" ] && [ "$d" != "/" ]; do
+          [ -f "$d/power/wakeup" ] && printf '%s=%s\n' "$(basename "$d")" "$(cat "$d/power/wakeup")"
+          d=$(dirname "$d")
+        done
+      done
+  register: _sd_wifi_after
+  changed_when: false
+  when: steamdeck_apply | bool
+
+- name: Assert every WiFi link is disarmed
+  ansible.builtin.assert:
+    that:
+      - _sd_wifi_after.stdout_lines | select('search', '=enabled') | list | length == 0
+    fail_msg: >-
+      Still armed after the write:
+      {{ _sd_wifi_after.stdout_lines | select('search', '=enabled') | join(', ') }}
+      — the driver refused it.
+    quiet: true
+  when: steamdeck_apply | bool
+
+- name: Report the result
+  ansible.builtin.debug:
+    msg:
+      - "{{ _sd_wifi_after.stdout_lines }}"
+      - >-
+        Disarmed. The corrected udev rule (steamdeck_action=wol_persist) is what keeps the WiFi
+        adapter unarmed across reboots; this only fixes the RUNNING session, whose values were
+        set before that rule was corrected.
+  when: steamdeck_apply | bool

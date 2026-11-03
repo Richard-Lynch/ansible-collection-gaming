@@ -1,0 +1,11 @@
+---
+galaxy_info:
+  namespace: richard_lynch
+  author: Richard Lynch
+  description: >-
+    Manage a Steam Deck in user space: library tiles and their artwork, Moonlight and EmuDeck
+    settings, Decky plugins, wake-on-LAN, and tiles that drive a streaming host.
+  license: GPL-3.0-or-later
+  min_ansible_version: "2.19"
+  galaxy_tags: [steamdeck, steamos, gaming, linux]
+dependencies: []

@@ -1,0 +1,88 @@
+---
+# Resolve caller-supplied vars over the generated defaults. defaults/main.yml is GENERATED from
+# meta/argument_specs.py and holds `*__default` vars, not the plain names tasks use.
+- name: Store vars
+  ansible.builtin.set_fact:
+    steamdeck_action: "{{ steamdeck_action | default(steamdeck_action__default) }}"
+    steamdeck_apply: "{{ steamdeck_apply | default(steamdeck_apply__default) }}"
+    steamdeck_probe_output: "{{ steamdeck_probe_output | default(steamdeck_probe_output__default) }}"
+    steamdeck_remove_app: "{{ steamdeck_remove_app | default(steamdeck_remove_app__default) }}"
+    steamdeck_remove_confirm: "{{ steamdeck_remove_confirm | default(steamdeck_remove_confirm__default) }}"
+    steamdeck_remove_data: "{{ steamdeck_remove_data | default(steamdeck_remove_data__default) }}"
+    steamdeck_helper_dir: "{{ steamdeck_helper_dir | default(steamdeck_helper_dir__default) }}"
+    steamdeck_steam_userdir: "{{ steamdeck_steam_userdir | default(steamdeck_steam_userdir__default) }}"
+    steamdeck_decky_settings_files: "{{ steamdeck_decky_settings_files | default(steamdeck_decky_settings_files__default) }}"
+    steamdeck_decky_settings: "{{ steamdeck_decky_settings | default(steamdeck_decky_settings__default) }}"
+    steamdeck_decky_remove: "{{ steamdeck_decky_remove | default(steamdeck_decky_remove__default) }}"
+    steamdeck_css_themes: "{{ steamdeck_css_themes | default(steamdeck_css_themes__default) }}"
+    steamdeck_css_remove: "{{ steamdeck_css_remove | default(steamdeck_css_remove__default) }}"
+    steamdeck_emudeck_settings: "{{ steamdeck_emudeck_settings | default(steamdeck_emudeck_settings__default) }}"
+    steamdeck_emudeck_secrets: "{{ steamdeck_emudeck_secrets | default(steamdeck_emudeck_secrets__default) }}"
+    steamdeck_battery_limit: "{{ steamdeck_battery_limit | default(steamdeck_battery_limit__default) }}"
+    steamdeck_battery_unit: "{{ steamdeck_battery_unit | default(steamdeck_battery_unit__default) }}"
+    steamdeck_reboot_confirm: "{{ steamdeck_reboot_confirm | default(steamdeck_reboot_confirm__default) }}"
+    steamdeck_reboot_timeout: "{{ steamdeck_reboot_timeout | default(steamdeck_reboot_timeout__default) }}"
+    # Every argspec option must be listed here: this resolver is hand-written, and a missing entry
+    # leaves the option undefined (close_game's wait would die "undefined" and go straight to
+    # SIGKILL). The generated _resolve_defaults.yml is not included by the role.
+    steamdeck_close_game_timeout: "{{ steamdeck_close_game_timeout | default(steamdeck_close_game_timeout__default) }}"
+    steamdeck_wol_udev_rule: "{{ steamdeck_wol_udev_rule | default(steamdeck_wol_udev_rule__default) }}"
+    steamdeck_wol_unit: "{{ steamdeck_wol_unit | default(steamdeck_wol_unit__default) }}"
+    steamdeck_steam_guard_url: "{{ steamdeck_steam_guard_url | default(steamdeck_steam_guard_url__default) }}"
+    steamdeck_steam_guard_target: "{{ steamdeck_steam_guard_target | default(steamdeck_steam_guard_target__default) }}"
+    steamdeck_steam_guard_timeout: "{{ steamdeck_steam_guard_timeout | default(steamdeck_steam_guard_timeout__default) }}"
+    steamdeck_dst_control_url: "{{ steamdeck_dst_control_url | default(steamdeck_dst_control_url__default) }}"
+    steamdeck_dst_control_target: "{{ steamdeck_dst_control_target | default(steamdeck_dst_control_target__default) }}"
+    steamdeck_dst_start_timeout: "{{ steamdeck_dst_start_timeout | default(steamdeck_dst_start_timeout__default) }}"
+    steamdeck_dst_play_host: "{{ steamdeck_dst_play_host | default(steamdeck_dst_play_host__default) }}"
+    steamdeck_dst_play_port: "{{ steamdeck_dst_play_port | default(steamdeck_dst_play_port__default) }}"
+    steamdeck_dst_play_password_item: "{{ steamdeck_dst_play_password_item | default(steamdeck_dst_play_password_item__default) }}"
+    steamdeck_dst_play_password_field: "{{ steamdeck_dst_play_password_field | default(steamdeck_dst_play_password_field__default) }}"
+    steamdeck_dst_play_secret_vault: "{{ steamdeck_dst_play_secret_vault | default(steamdeck_dst_play_secret_vault__default) }}"
+    steamdeck_dst_play_join_timeout: "{{ steamdeck_dst_play_join_timeout | default(steamdeck_dst_play_join_timeout__default) }}"
+    steamdeck_dst_play_stop_grace: "{{ steamdeck_dst_play_stop_grace | default(steamdeck_dst_play_stop_grace__default) }}"
+    steamdeck_wake_target: "{{ steamdeck_wake_target | default(steamdeck_wake_target__default) }}"
+    steamdeck_wake_mac: "{{ steamdeck_wake_mac | default(steamdeck_wake_mac__default) }}"
+    steamdeck_wake_broadcast: "{{ steamdeck_wake_broadcast | default(steamdeck_wake_broadcast__default) }}"
+    steamdeck_wake_port: "{{ steamdeck_wake_port | default(steamdeck_wake_port__default) }}"
+    steamdeck_wake_probe_host: "{{ steamdeck_wake_probe_host | default(steamdeck_wake_probe_host__default) }}"
+    steamdeck_wake_probe_port: "{{ steamdeck_wake_probe_port | default(steamdeck_wake_probe_port__default) }}"
+    steamdeck_wake_timeout: "{{ steamdeck_wake_timeout | default(steamdeck_wake_timeout__default) }}"
+    steamdeck_wake_endpoint: "{{ steamdeck_wake_endpoint | default(steamdeck_wake_endpoint__default) }}"
+    steamdeck_sudo_secret_item: "{{ steamdeck_sudo_secret_item | default(steamdeck_sudo_secret_item__default) }}"
+    steamdeck_sudo_secret_vault: "{{ steamdeck_sudo_secret_vault | default(steamdeck_sudo_secret_vault__default) }}"
+    steamdeck_artwork_action: "{{ steamdeck_artwork_action | default(steamdeck_artwork_action__default) }}"
+    steamdeck_artwork_dir: "{{ steamdeck_artwork_dir | default(steamdeck_artwork_dir__default) }}"
+    steamdeck_artwork_backup_dir: "{{ steamdeck_artwork_backup_dir | default(steamdeck_artwork_backup_dir__default) }}"
+    steamdeck_managed_shortcuts: "{{ steamdeck_managed_shortcuts | default(steamdeck_managed_shortcuts__default) }}"
+    steamdeck_shortcut_owners: "{{ steamdeck_shortcut_owners | default(steamdeck_shortcut_owners__default) }}"
+    steamdeck_stream_host: "{{ steamdeck_stream_host | default(steamdeck_stream_host__default) }}"
+    steamdeck_stream_apps: "{{ steamdeck_stream_apps | default(steamdeck_stream_apps__default) }}"
+    steamdeck_stream_prefix: "{{ steamdeck_stream_prefix | default(steamdeck_stream_prefix__default) }}"
+    steamdeck_steam_stop_wait: "{{ steamdeck_steam_stop_wait | default(steamdeck_steam_stop_wait__default) }}"
+    steamdeck_moonlight_host: "{{ steamdeck_moonlight_host | default(steamdeck_moonlight_host__default) }}"
+    steamdeck_moonlight_fps: "{{ steamdeck_moonlight_fps | default(steamdeck_moonlight_fps__default) }}"
+    steamdeck_moonlight_bitrate: "{{ steamdeck_moonlight_bitrate | default(steamdeck_moonlight_bitrate__default) }}"
+    steamdeck_moonlight_hdr: "{{ steamdeck_moonlight_hdr | default(steamdeck_moonlight_hdr__default) }}"
+
+# Resolve the become password from the named 1Password item. Set here rather than in inventory so
+# the secret never appears in a file that is read for other reasons — and through the CACHED
+# lookup, so the value is fetched once rather than by a bare `op` call on every run (which can
+# raise an interactive approval prompt each time).
+- name: Assert the sudo password's vault is named
+  ansible.builtin.assert:
+    that:
+      - steamdeck_sudo_secret_vault | length > 0
+    fail_msg: >-
+      steamdeck_sudo_secret_item is set but steamdeck_sudo_secret_vault is empty: name the
+      1Password vault the item lives in.
+    quiet: true
+  when: steamdeck_sudo_secret_item | length > 0
+
+- name: Resolve the sudo password
+  ansible.builtin.set_fact:
+    ansible_become_password: >-
+      {{ lookup('richard_lynch.common.onepassword_cached', steamdeck_sudo_secret_item,
+                field='password', vault=steamdeck_sudo_secret_vault) }}
+  no_log: true
+  when: steamdeck_sudo_secret_item | length > 0

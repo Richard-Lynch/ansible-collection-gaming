@@ -1,0 +1,83 @@
+---
+# AUTO-GENERATED argument spec — DO NOT EDIT.
+#
+# Source of truth: roles/steam_workshop/meta/argument_specs.py
+# Regenerate:      venv/bin/python tools/argspec/cli.py x generate steam_workshop
+#
+# Edits here are silently overwritten on the next generation. To change a value or its
+# documentation, change the OptionSpec in the source file above — descriptions there
+# are emitted as the comments in this file.
+argument_specs:
+  main:
+    short_description: Reconcile a Steam account's Workshop subscriptions over the Web API
+    description:
+      - Subscribes the account to every declared Workshop item it is not yet
+      - subscribed to (and unsubscribes only items declared state=absent), then reads
+      - 'the subscriptions back to prove it. Runs on the CONTROLLER: a subscription'
+      - belongs to the account, and every Steam client signed in to it downloads the
+      - "item. Generate-don't-apply: reports the plan unless steam_workshop_apply."
+    version_added: '1.0'
+    author: Collection maintainers
+    options:
+      steam_workshop_apply:
+        description: Actually subscribe/unsubscribe. Default false reports the plan only.
+        type: bool
+        required: false
+        default: false
+      steam_workshop_steamid:
+        description:
+          - The account's 17-digit SteamID64; set it in inventory. (The number Steam
+          - uses for userdata/ and the DST client's save folder is the 32-bit
+          - ACCOUNT id; SteamID64 = account id + 76561197960265728.)
+        type: str
+        required: true
+      steam_workshop_items:
+        description: The declared subscriptions.
+        type: list
+        required: false
+        default: []
+        elements: dict
+        options:
+          id:
+            description: Workshop item id (digits).
+            type: str
+            required: true
+          app_id:
+            description: "The game's Steam app id (DST: 322330)."
+            type: int
+            required: true
+          name:
+            description: Label for reports.
+            type: str
+            required: false
+            default: ''
+          state:
+            description: absent unsubscribes; omitted items are never touched.
+            type: str
+            required: false
+            default: present
+            choices:
+              - present
+              - absent
+      steam_workshop_api_key_item:
+        description:
+          - 1Password item holding the account owner's Steam Web API key (minted
+          - at steamcommunity.com/dev/apikey, once, by the account holder). Required.
+        type: str
+        required: false
+        default: ''
+      steam_workshop_api_key_field:
+        description: Field of the item holding the key.
+        type: str
+        required: false
+        default: credential
+      steam_workshop_secret_vault:
+        description: 1Password vault of the key item. Required.
+        type: str
+        required: false
+        default: ''
+      steam_workshop_api_base:
+        description: Web API base URL. Only tests point it elsewhere.
+        type: str
+        required: false
+        default: https://api.steampowered.com

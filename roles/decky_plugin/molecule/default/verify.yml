@@ -1,0 +1,90 @@
+---
+# Asserts on the FILES the converge left in the fixture home — after molecule's idempotence pass,
+# so these are the state a SECOND run leaves too.
+- name: Verify
+  hosts: localhost
+  gather_facts: true
+  vars:
+    _root: /tmp/molecule-decky-plugin
+    _dir: /tmp/molecule-decky-plugin/home/homebrew/plugins/fixture
+    _files:
+      [
+        plugin.json,
+        package.json,
+        main.py,
+        dist/index.js,
+        py_modules/fixturecfg/__init__.py,
+      ]
+  tasks:
+    - name: Installed files
+      ansible.builtin.stat:
+        path: "{{ _dir }}/{{ item }}"
+        checksum_algorithm: sha256
+      loop: "{{ _files }}"
+      register: _installed
+
+    - name: Their sources
+      ansible.builtin.stat:
+        path: "{{ _root }}/src/fixture/{{ item }}"
+        checksum_algorithm: sha256
+      loop: "{{ _files }}"
+      register: _source
+
+    - name: Every archive file is installed byte-for-byte, 0644
+      ansible.builtin.assert:
+        that:
+          - item.0.stat.exists
+          - item.0.stat.checksum == item.1.stat.checksum
+          - item.0.stat.mode == '0644'
+        fail_msg: "{{ item.0.item }} differs from the archive or has mode {{ item.0.stat.mode | default('?') }}"
+        quiet: true
+      loop: "{{ _installed.results | zip(_source.results) | list }}"
+      loop_control:
+        label: "{{ item.0.item }}"
+
+    - name: Stale file and byte cache
+      ansible.builtin.stat:
+        path: "{{ _dir }}/{{ item }}"
+      loop: [old.js, py_modules/fixturecfg/__pycache__/__init__.cpython-312.pyc]
+      register: _leftovers
+
+    - name: The stale file is gone; the byte cache is kept
+      ansible.builtin.assert:
+        that:
+          - not _leftovers.results[0].stat.exists
+          - _leftovers.results[1].stat.exists
+        quiet: true
+
+    - name: Top directory
+      ansible.builtin.stat:
+        path: "{{ _dir }}"
+      register: _top
+
+    - name: Top directory is 0755 and owned by the "root" owner (the test user here)
+      ansible.builtin.assert:
+        that:
+          - _top.stat.mode == '0755'
+          - _top.stat.pw_name == ansible_user_id
+        quiet: true
+
+    - name: Config file
+      ansible.builtin.stat:
+        path: "{{ _root }}/home/homebrew/settings/fixture/config.json"
+      register: _cfg_stat
+
+    - name: Config content
+      ansible.builtin.slurp:
+        path: "{{ _root }}/home/homebrew/settings/fixture/config.json"
+      register: _cfg
+
+    - name: Config rendered from the dict, numbers as numbers, 0600
+      ansible.builtin.assert:
+        that:
+          - _cfg_stat.stat.mode == '0600'
+          - _doc.dst.base_url == 'http://dst.example:8091'
+          - _doc.dst.timeout_s == 30
+          - _doc.dst.timeout_s is number
+          - _doc.wake.mac == '02:00:5e:00:53:01'
+        quiet: true
+      vars:
+        _doc: "{{ _cfg.content | b64decode | from_json }}"

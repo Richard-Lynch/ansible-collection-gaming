@@ -1,0 +1,196 @@
+---
+# ENTRYPOINT: why does this device keep waking up? Read-only, writes nothing.
+#
+# THE QUESTION THIS ANSWERS. "It keeps turning on" has three distinct causes that look identical
+# from the outside, and the fix for each is different:
+#
+#   1. Something WOKE it            — an armed wakeup source fired (USB, PCIe, the dock's NIC),
+#                                     or an RTC alarm went off.
+#   2. It NEVER SLEPT               — an inhibitor lock, or an idle policy that does not suspend.
+#   3. It BOOTED                    — a cold start, not a resume at all.
+#
+# Distinguishing them comes first, because chasing a wakeup source on a machine that was booting
+# explains nothing. The boot list and the suspend records separate the three.
+#
+# COUNTS, NOT FLAGS. Nearly every device on a Deck is PERMITTED to wake the machine; that a
+# device has wakeup=enabled is not evidence it did anything. `wakeup_count` /
+# `wakeup_active_count` record actual firings, so the suspect is the device whose count is
+# non-zero — which is the whole reason this reports counts rather than listing armed devices.
+#
+# READ-ONLY BY DESIGN AND WITH NO APPLY PATH. Unlike wol_report there is deliberately no
+# steamdeck_apply branch here: what to disarm depends entirely on what the evidence shows, and a
+# report that could also silently change wakeup flags is one that cannot be run freely while
+# investigating. Disarming is wol_disarm_wifi's job, or a new targeted action.
+
+- name: Apply role defaults
+  ansible.builtin.include_tasks: setup_vars.yml
+
+- name: Collect the wake evidence
+  # Root is NOT required: every source read here — /proc/acpi/wakeup, sysfs power/*, the RTC
+  # node, systemctl show, journalctl — is readable by the `deck` user. Keeping this unprivileged
+  # means the report runs even when the sudo password is unavailable, which is exactly when
+  # someone is trying to work out what is going on.
+  ansible.builtin.script:
+    cmd: steamdeck_wake_report.py
+    executable: /usr/bin/python3
+  register: _sd_wake_raw
+  changed_when: false
+  check_mode: false # a read: under --check the report must still have something to parse
+
+- name: Parse it
+  # Strip anything before the first '{': the target's shell emits terminal escape sequences
+  # ahead of real output, which is not valid JSON. Same treatment as steamdeck_status.
+  ansible.builtin.set_fact:
+    _sd_wake: "{{ _sd_wake_raw.stdout[_sd_wake_raw.stdout.find('{') :] | from_json }}"
+
+- name: Report what can wake this device, and what actually has
+  ansible.builtin.debug:
+    msg: "{{ _report.splitlines() }}"
+  vars:
+    # Devices that have ACTUALLY signalled a wakeup. `count` is a string from sysfs (and '' where
+    # the device exposes no counter), so it is filtered for digits before comparison — a bare
+    # int() on '' raises and would fail the whole report.
+    # BOTH counters, not just `count`. A device can carry the evidence in
+    # wakeup_ACTIVE_count while wakeup_count stays 0 — which is exactly what the Deck's xHCI
+    # controllers do, so keying only on `count` reported "nothing has recorded a wakeup event"
+    # on a machine that had been woken by USB 32 times. A confident wrong answer, and the one
+    # that would send someone looking in the wrong place.
+    _fired: >-
+      {{ _sd_wake.sysfs_wakeup
+         | selectattr('count', 'match', '^[0-9]+$')
+         | rejectattr('count', 'equalto', '0') | list
+         + (_sd_wake.sysfs_wakeup
+            | selectattr('active_count', 'match', '^[0-9]+$')
+            | rejectattr('active_count', 'equalto', '0')
+            | rejectattr('count', 'match', '^[1-9][0-9]*$') | list) }}
+    _armed: "{{ _sd_wake.sysfs_wakeup | selectattr('wakeup', 'equalto', 'enabled') | list }}"
+    _acpi_on: "{{ _sd_wake.acpi_wakeup | selectattr('status', 'equalto', 'enabled') | list }}"
+    _usb_fired: >-
+      {{ _sd_wake.usb
+         | selectattr('count', 'match', '^[0-9]+$')
+         | rejectattr('count', 'equalto', '0') | list
+         + (_sd_wake.usb
+            | selectattr('active_count', 'match', '^[0-9]+$')
+            | rejectattr('active_count', 'equalto', '0')
+            | rejectattr('count', 'match', '^[1-9][0-9]*$') | list) }}
+    _rtc_armed: "{{ _sd_wake.rtc | dict2items | selectattr('value.armed') | list }}"
+    # Under a minute: long enough to exclude a deliberate short nap, short enough that no human
+    # woke it. A run of these is the signature of a failed suspend rather than a wake.
+    _short: >-
+      {{ _sd_wake.suspend_durations | selectattr('seconds', '<', 60) | list }}
+    _report: |
+      ===== DID IT STAY ASLEEP? =====
+      {% if _short %}
+      {{ _short | length }} of the last {{ _sd_wake.suspend_durations | length }} suspends lasted
+      under 60 SECONDS. THIS IS THE ANSWER when it is present: the device is not being woken by
+      anything external, it is failing to STAY asleep and resuming immediately. Look at what is
+      holding it up — a running game, a USB device signalling activity — not at wake sources.
+      {% for d in _short[-12:] %}
+        {{ d.entry }} -> {{ d.exit }}  ({{ d.seconds }}s)
+      {% endfor %}
+      {% elif _sd_wake.suspend_durations %}
+      Suspends are lasting a normal length; the last {{ _sd_wake.suspend_durations | length }} ran
+      {{ (_sd_wake.suspend_durations | map(attribute='seconds') | min) }}s to
+      {{ (_sd_wake.suspend_durations | map(attribute='seconds') | max) }}s.
+      {% else %}
+      No suspend/resume pairs recorded in the last 7 days — it is not suspending at all.
+      {% endif %}
+
+      ===== WHAT ENDED THE LAST SUSPEND =====
+      pm_wakeup_irq   : {{ _sd_wake.wakeup_irq.irq | default('(none recorded)') }}
+      owned by        : {{ _sd_wake.wakeup_irq.owner | default('?') }}
+      The most direct answer available, though it covers only the MOST RECENT suspend — it is
+      overwritten by the next one.
+
+      ===== DID IT WAKE, OR DID IT BOOT? =====
+      uptime          : {{ (_sd_wake.uptime_seconds / 3600) | round(2) }}h
+      boots recorded  : {{ _sd_wake.history.boots | length }} (last 15 shown below)
+      {% for b in _sd_wake.history.boots %}
+        {{ b }}
+      {% endfor %}
+      A NEW boot id for each event means it is powering on cold, not resuming — look at what
+      shuts it down, not at wakeup sources. Repeated events inside ONE boot are suspend/resume.
+
+      ===== SCHEDULED WAKE (RTC ALARM) =====
+      {% if _rtc_armed %}
+      ARMED — a wake is SCHEDULED. This alone explains a device that turns on at a regular time.
+      {% for r in _rtc_armed %}
+        {{ r.key }}: wakealarm={{ r.value.wakealarm }} {{ r.value }}
+      {% endfor %}
+      {% else %}
+      No RTC alarm armed.
+      {% endif %}
+
+      timers that can WAKE the machine (WakeSystem=true):
+      {% if _sd_wake.wake_timers %}
+      {% for t in _sd_wake.wake_timers %}
+        {{ t.timer }} -> {{ t.Unit | default('?') }} next={{ t.NextElapseUSecRealtime | default('?') }}
+      {% endfor %}
+      {% else %}
+        none
+      {% endif %}
+
+      ===== WAKEUP SOURCES THAT HAVE ACTUALLY FIRED =====
+      {% if _fired %}
+      {% for d in _fired %}
+        {{ '%-16s' | format(d.device) }} count={{ d.count }} active={{ d.active_count }}
+      {{- '  ' ~ d.driver if d.driver else '' }}{{ '  ' ~ d.product if d.product else '' }}
+      {{- '  [' ~ d.wakeup ~ ']' }}
+      {% endfor %}
+      THESE are the suspects. A non-zero count means the device signalled a wakeup event; a
+      non-zero active count means one of those actually ended a suspend.
+      {% else %}
+      Nothing has recorded a wakeup event. If the device is still waking, it is either booting
+      cold or never suspending — see the sections above and below.
+      {% endif %}
+
+      ===== USB DEVICES (the dock, controllers, chargers) =====
+      {% for d in _sd_wake.usb %}
+        {{ '%-30s' | format(d.product | truncate(30)) }} wakeup={{ '%-9s' | format(d.wakeup) }}
+      {{- ' count=' ~ d.count if d.count else '' }}{{ ' active=' ~ d.active_count if d.active_count else '' }}
+      {% endfor %}
+      {% if _usb_fired %}
+      USB devices with a non-zero wakeup count: {{ _usb_fired | map(attribute='product') | join(', ') }}
+      {% endif %}
+
+      ===== ARMED BUT NOT (YET) FIRED =====
+      {{ _armed | length }} sysfs device(s) permitted to wake the machine;
+      {{ _acpi_on | length }} ACPI device(s) enabled: {{ _acpi_on | map(attribute='device') | join(' ') }}
+      Being armed is NOT evidence of anything — most devices are. Cross-reference with the counts.
+
+      ===== IS IT EVEN SLEEPING? =====
+      logind IdleAction      : {{ _sd_wake.logind.IdleAction | default('?') }}
+             IdleActionUSec  : {{ _sd_wake.logind.IdleActionUSec | default('?') }}
+             HandleLidSwitch : {{ _sd_wake.logind.HandleLidSwitch | default('?') }}
+             HandlePowerKey  : {{ _sd_wake.logind.HandlePowerKey | default('?') }}
+      NOTE on SteamOS in Game Mode the SUSPEND POLICY IS STEAM'S, not logind's — an IdleAction of
+      'ignore' here is normal and does not mean the device never sleeps.
+
+      inhibitor locks currently held (these BLOCK sleep):
+      {% for line in _sd_wake.inhibitors %}
+        {{ line }}
+      {% endfor %}
+
+      ===== ACPI EVENTS THAT HAVE FIRED (GPE counts) =====
+      {% for g in _sd_wake.gpe[:12] %}
+        {{ '%-14s' | format(g.event) }} {{ g.count }}  {{ g.flags }}
+      {% endfor %}
+      A GPE climbing across a sleep is a hardware-level wake signal, named even when no driver
+      logged anything.
+
+- name: Report the suspend/resume record
+  # Separated from the summary above because it is long and chronological — the summary answers
+  # "what could have", this answers "what happened, and when".
+  ansible.builtin.debug:
+    msg: "{{ _log.splitlines() }}"
+  vars:
+    _log: |
+      ===== SLEEP / WAKE RECORD (last 7 days) =====
+      {% for line in _sd_wake.history.sleep_events %}
+      {{ line }}
+      {% endfor %}
+
+      ===== KERNEL PM MESSAGES =====
+      {% for line in _sd_wake.history.kernel_pm %}
+      {{ line }}
+      {% endfor %}

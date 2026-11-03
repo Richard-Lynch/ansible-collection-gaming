@@ -1,0 +1,27 @@
+# Offline scenario — the role reconciles subscriptions through Steam's Web API with a real key,
+# which CI does not have. converge.yml runs the reconciler script end to end against a local fake
+# of the API (files/test_steam_workshop.py); verify.yml syntax-checks a play that applies the role,
+# so the role's tasks and argspec at least parse.
+#
+# WHAT IT DOES NOT TEST: the real Steam Web API.
+---
+dependency:
+  name: galaxy
+driver:
+  name: default
+platforms:
+  - name: localhost
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: "${MOLECULE_PROJECT_DIRECTORY}/../"
+    ANSIBLE_COLLECTIONS_PATH: "${MOLECULE_PROJECT_DIRECTORY}/../../collections.galaxy:${MOLECULE_PROJECT_DIRECTORY}/../../../../.."
+  inventory:
+    host_vars:
+      localhost:
+        ansible_connection: local
+  playbooks:
+    converge: converge.yml
+    verify: verify.yml
+verifier:
+  name: ansible

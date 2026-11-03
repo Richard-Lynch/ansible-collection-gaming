@@ -1,0 +1,23 @@
+# {{ ansible_managed }}
+# The DST server's RUNTIME, not the server itself: steamcmd plus the libraries the 64-bit
+# dedicated server links, plus this role's three scripts. The game is installed by steamcmd onto
+# a volume at /server at every start (dst-prepare), so a game patch never needs an image rebuild —
+# this image changes only when its base, its packages or a script changes, and its tag is a hash
+# of exactly those inputs.
+FROM {{ dst_base_image }}
+
+RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends {{ dst_image_packages | join(' ') }} \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY dst-shard.sh /usr/local/bin/dst-shard
+COPY dst-console.sh /usr/local/bin/dst-console
+COPY dst-prepare.sh /usr/local/bin/dst-prepare
+RUN chmod 0755 /usr/local/bin/dst-shard /usr/local/bin/dst-console /usr/local/bin/dst-prepare
+
+LABEL org.opencontainers.image.title="iaac-dst-server" \
+      io.iaac.role="service_dst_server"
+
+# The base image's ENTRYPOINT is steamcmd; every unit names its own command instead.
+ENTRYPOINT []
+CMD ["dst-shard", "Master"]

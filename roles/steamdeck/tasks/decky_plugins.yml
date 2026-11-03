@@ -1,0 +1,180 @@
+---
+# ENTRYPOINT: manage Decky Loader plugins declaratively.
+#
+# WHAT IS AND IS NOT AUTOMATABLE HERE. Decky's HTTP API is unusable for this: it binds localhost
+# with an auth token REGENERATED at every service start, and its install endpoint does not
+# actually install — it posts a prompt to the Steam UI and waits for a human to confirm. So the
+# supported automation path is the FILESYSTEM: a plugin is installed by unpacking it into
+# ~/homebrew/plugins/<Name>/, and Decky's watchdog picks it up. There is no registration step.
+#
+# THIS ENTRYPOINT ONLY REMOVES. Installing means fetching a hash-pinned artifact from a
+# third-party CDN, which is a supply-chain decision that should be made deliberately rather than
+# slipped in alongside a cleanup — so it is not implemented until asked for.
+#
+# REMOVAL IS THREE PLACES, NOT ONE:
+#   1. ~/homebrew/plugins/<Name>/            the files
+#   2. ~/.config/<name>/                     some plugins keep config OUTSIDE the plugin dir
+#   3. ~/homebrew/settings/loader.json       pluginOrder, BY DISPLAY NAME not directory name
+# Deleting only (1) leaves orphaned references that Decky's own uninstaller would have cleared.
+#
+# SYSFS CHANGES DO NOT REVERT. A plugin like PowerTools writes TDP and clock limits to sysfs,
+# which is volatile: removing the plugin stops it REAPPLYING those values but does not restore
+# stock ones. A reboot does. The report says so rather than implying removal is sufficient.
+
+- name: Apply role defaults
+  ansible.builtin.include_tasks: setup_vars.yml
+
+- name: Assert plugins were named
+  ansible.builtin.assert:
+    that:
+      - (steamdeck_decky_remove | length) > 0
+    fail_msg: >-
+      Set steamdeck_decky_remove to a list of plugin directory names to remove,
+      e.g. -e '{"steamdeck_decky_remove":["PowerTools"]}'.
+    quiet: true
+
+- name: Survey what each named plugin leaves behind
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -o pipefail
+      for p in {{ steamdeck_decky_remove | map('quote') | join(' ') }}; do
+        d="$HOME/homebrew/plugins/$p"
+        printf '%s:dir=%s\n' "$p" "$([ -d "$d" ] && du -sh "$d" | cut -f1 || echo absent)"
+        # Plugins conventionally lowercase their name for ~/.config.
+        lc=$(printf '%s' "$p" | tr '[:upper:]' '[:lower:]')
+        printf '%s:config=%s\n' "$p" "$([ -d "$HOME/.config/$lc" ] && echo "~/.config/$lc" || echo none)"
+        printf '%s:settings=%s\n' "$p" "$([ -d "$HOME/homebrew/settings/$p" ] && echo present || echo none)"
+        printf '%s:refs=%s\n' "$p" \
+          "$(grep -o "$p" "$HOME/homebrew/settings/loader.json" 2>/dev/null | wc -l | tr -d ' ')"
+        printf '%s:running=%s\n' "$p" "$(pgrep -xc "$p" 2>/dev/null || echo 0)"
+      done
+  register: _sd_decky_survey
+  changed_when: false
+
+- name: Report the plan
+  ansible.builtin.debug:
+    msg: "{{ _report.splitlines() }}"
+  vars:
+    _report: |
+      ===== {{ 'REMOVING' if (steamdeck_apply | bool) else 'WOULD REMOVE' }} =====
+      {{ _sd_decky_survey.stdout }}
+
+      Removal covers the plugin directory, any ~/.config/<name>, per-plugin settings, and the
+      references Decky keeps in loader.json. Deleting only the directory leaves
+      the last of those orphaned.
+
+      NOTE sysfs changes (TDP, clock limits) are NOT reverted by removal — they are volatile
+      values the plugin stops reapplying. Reboot to return to stock.
+      {{ '' if (steamdeck_apply | bool) else 'Re-run with steamdeck_apply=true.' }}
+
+- name: Stop Decky before changing its plugin directory
+  # Decky holds plugin state in memory and rewrites plugin_loader_settings.json on shutdown, so
+  # an edit made while it runs is silently discarded — the same class of false success as
+  # editing Steam's shortcuts.vdf with Steam running.
+  ansible.builtin.systemd_service:
+    name: plugin_loader
+    state: stopped
+  become: true
+  when: steamdeck_apply | bool
+
+- name: Capture display names before the directories go
+  # The cleaner can read plugin.json itself, but only while the directory still exists — and it
+  # runs AFTER the removal. So the names are captured here and passed in.
+  # loader.json records plugins by DISPLAY name ("CSS Loader"), not directory name
+  # (SDH-CssLoader). The mapping lives in each plugin's own plugin.json — so it has to be read
+  # BEFORE the directory is deleted, or the reference cleanup has nothing to match on.
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -o pipefail
+      for p in {{ steamdeck_decky_remove | map('quote') | join(' ') }}; do
+        f="$HOME/homebrew/plugins/$p/plugin.json"
+        [ -f "$f" ] && python3 -c "import json,sys;print(json.load(open(sys.argv[1])).get('name',''))" "$f" || true
+      done
+  register: _sd_display_names
+  changed_when: false
+  when: steamdeck_apply | bool
+
+- name: Remove the plugin directories
+  ansible.builtin.file:
+    path: "{{ ansible_env.HOME }}/homebrew/plugins/{{ item }}"
+    state: absent
+  loop: "{{ steamdeck_decky_remove }}"
+  become: true
+  when: steamdeck_apply | bool
+
+- name: Remove per-plugin settings and out-of-tree config
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop: >-
+    {{ steamdeck_decky_remove | map('regex_replace', '^(.*)$',
+         ansible_env.HOME ~ '/homebrew/settings/\1') | list
+       + steamdeck_decky_remove | map('lower') | map('regex_replace', '^(.*)$',
+         ansible_env.HOME ~ '/.config/\1') | list }}
+  become: true
+  when: steamdeck_apply | bool
+
+- name: Clear the references Decky keeps
+  # plugin_loader_settings.json holds pluginOrder, hiddenPlugins and frozenPlugins by NAME.
+  # Decky's own uninstaller clears these; a plain directory delete does not, leaving entries
+  # that refer to a plugin that no longer exists.
+  ansible.builtin.script:
+    cmd: >-
+      decky_settings_clean.py
+      --settings '{{ ansible_env.HOME }}/homebrew/settings/loader.json'
+      --remove '{{ steamdeck_decky_remove | to_json }}'
+      --plugins-dir '{{ ansible_env.HOME }}/homebrew/plugins'
+      --also '{{ (_sd_display_names.stdout_lines | default([]) | select | list) | to_json }}'
+      --apply
+    executable: /usr/bin/python3
+  register: _sd_decky_clean
+  changed_when: (_sd_decky_clean.stdout[_sd_decky_clean.stdout.find('{') :] | from_json).changed | bool
+  when: steamdeck_apply | bool
+
+- name: Start Decky again
+  ansible.builtin.systemd_service:
+    name: plugin_loader
+    state: started
+  become: true
+  when: steamdeck_apply | bool
+
+- name: Read back what remains
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -o pipefail
+      for p in {{ steamdeck_decky_remove | map('quote') | join(' ') }}; do
+        printf '%s:dir=%s\n' "$p" "$([ -d "$HOME/homebrew/plugins/$p" ] && echo PRESENT || echo gone)"
+        printf '%s:refs=%s\n' "$p" \
+          "$(grep -o "$p" "$HOME/homebrew/settings/loader.json" 2>/dev/null | wc -l | tr -d ' ')"
+      done
+      printf 'decky=%s\n' "$(systemctl is-active plugin_loader 2>/dev/null)"
+      printf 'remaining=%s\n' "$(ls "$HOME/homebrew/plugins" 2>/dev/null | wc -l | tr -d ' ')"
+  register: _sd_decky_after
+  changed_when: false
+  when: steamdeck_apply | bool
+
+- name: Assert removal completed and Decky is healthy
+  # Decky is asserted RUNNING because the real risk here is not a leftover file — it is leaving
+  # the loader broken, which presents as the Steam UI failing to render its menu.
+  ansible.builtin.assert:
+    that:
+      - "':dir=PRESENT' not in _sd_decky_after.stdout"
+      - "':refs=0' in _sd_decky_after.stdout"
+      - "'decky=active' in _sd_decky_after.stdout"
+    fail_msg: >-
+      Removal incomplete or Decky did not come back:
+      {{ _sd_decky_after.stdout_lines | join(' ') }}
+    quiet: true
+  when: steamdeck_apply | bool
+
+- name: Report
+  ansible.builtin.debug:
+    msg:
+      - "{{ _sd_decky_after.stdout_lines }}"
+      - >-
+        Removed. Any TDP or clock limits the plugin had applied are still in force until a
+        REBOOT — they are volatile sysfs values, and removal only stops them being reapplied.
+  when: steamdeck_apply | bool

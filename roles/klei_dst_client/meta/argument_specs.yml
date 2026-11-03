@@ -1,0 +1,95 @@
+---
+# AUTO-GENERATED argument spec — DO NOT EDIT.
+#
+# Source of truth: roles/klei_dst_client/meta/argument_specs.py
+# Regenerate:      venv/bin/python tools/argspec/cli.py x generate klei_dst_client
+#
+# Edits here are silently overwritten on the next generation. To change a value or its
+# documentation, change the OptionSpec in the source file above — descriptions there
+# are emitted as the comments in this file.
+argument_specs:
+  main:
+    short_description: Enable/disable client mods in a Don't Starve Together client
+    description:
+      - Edits the DST CLIENT's own mod state (client_save/modindex) on a device that
+      - plays the game — native Linux (~/.klei) or the Windows build under Proton (the
+      - Steam Deck). Only the declared mods' `enabled` field changes; everything else
+      - the game keeps there is preserved. The mods must already be downloaded, which
+      - a Workshop subscription does (roles/steam_workshop). Refuses while the game is
+      - "running: it rewrites that file on exit. Generate-don't-apply."
+    version_added: '1.0'
+    author: Collection maintainers
+    options:
+      klei_dst_client_apply:
+        description: Actually write the modindex. Default false reports the plan only.
+        type: bool
+        required: false
+        default: false
+      klei_dst_client_mods:
+        description: Client mods to switch on (or off) in the game's Mods screen.
+        type: list
+        required: false
+        default: []
+        elements: dict
+        options:
+          id:
+            description: Workshop id.
+            type: str
+            required: true
+          name:
+            description: Label for reports.
+            type: str
+            required: false
+            default: ''
+          enabled:
+            description: false switches it OFF; omitted mods are untouched.
+            type: bool
+            required: false
+            default: true
+      klei_dst_client_home:
+        description:
+          - Home directory to look for the game under. Empty derives it from the
+          - connecting user's facts (ansible_env.HOME); set only by tests.
+        type: str
+        required: false
+        default: ''
+      klei_dst_client_python:
+        description: Interpreter on the device for the modindex editor.
+        type: str
+        required: false
+        default: python3
+  cluster_token:
+    short_description: Read the Klei cluster token a DST client generated
+    description:
+      - Finds cluster_token.txt — downloaded from accounts.klei.com into ~/Downloads, or
+      - left by an older client in either install's home (native ~/.klei or the Proton
+      - prefix) — checks its shape, and sets the fact klei_dst_client_cluster_token
+      - (no_log) for the caller to store. Reads only; fails with where to make one.
+    version_added: '1.1'
+    author: Collection maintainers
+    options:
+      klei_dst_client_home:
+        description:
+          - Home directory to look for the game under. Empty derives it from the
+          - connecting user's facts (ansible_env.HOME); set only by tests.
+        type: str
+        required: false
+        default: ''
+  reset_crash_marker:
+    short_description: Reset DST's crash marker after the game was closed mid-load
+    description:
+      - The game writes client_save/boot_modindex = 'loading' when a load starts and
+      - "'done' when it ends; a launch that finds 'loading' disables EVERY mod. A close"
+      - while the client is still loading (a join test closing it in the lobby) leaves
+      - it set. This rewrites 'loading' to 'done', keeping the header, only while no
+      - Steam game runs. Proton (Steam Deck) install. Safe to run any time.
+    version_added: '1.3'
+    author: Collection maintainers
+    options:
+      klei_dst_client_home:
+        description:
+          - Home directory to look for the game under. Empty derives it from the
+          - connecting user's facts (ansible_env.HOME); set only by tests.
+        type: str
+        required: false
+        default: ''

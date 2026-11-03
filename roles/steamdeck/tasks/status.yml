@@ -1,0 +1,127 @@
+---
+# ENTRYPOINT: live hardware state — power, thermals, fan, storage, network, display, OS.
+# Writes nothing.
+#
+# WHY IT EXISTS. "Is it charging, how hot is it, is the fan working, how full is the SD card, is
+# it docked" are the questions actually asked of a handheld, and answering them meant a different
+# ad-hoc SSH command each time. The values come from half a dozen hwmon devices with different
+# units, so the conversion belongs in one tested place rather than in each invocation.
+#
+# DOCKED IS DERIVED, not assumed: the dock's r8152 ethernet having carrier is what distinguishes
+# docked from undocked, and that in turn decides whether Wake-on-LAN can work at all.
+#
+# USED% COMES FROM f_bfree, NOT total-minus-available. f_bavail excludes the root-reserved
+# blocks, so on ext4's usual 5% reserve the two differ by ~5 points — enough that a 90% warning
+# threshold would have fired at 85% of real usage.
+#
+# THE ROOTFS SEAL IS NOT REPORTED HERE. The live mount options cannot answer it —
+# `steamos-readonly enable` sets a flag that applies at BOOT without remounting, so / still reads
+# rw for the rest of the session. Use steamdeck_action=rootfs_report, which asks the
+# authoritative source.
+#
+# EVERY DEVICE IS FOUND BY DRIVER NAME, never by hwmon index — /sys/class/hwmon/hwmonN numbering
+# is assignment order and can change between boots. A hardcoded index works until it doesn't,
+# and then reports another chip's readings as the battery's.
+
+- name: Apply role defaults
+  ansible.builtin.include_tasks: setup_vars.yml
+
+- name: Read the hardware state
+  ansible.builtin.script:
+    cmd: steamdeck_status.py
+    executable: /usr/bin/python3
+  register: _sd_status_raw
+  changed_when: false
+  check_mode: false # a read: under --check the report must still have something to parse
+
+- name: Parse the state
+  # Strip anything before the first '{' — the target's shell emits terminal escape sequences
+  # before real output, which is not valid JSON.
+  ansible.builtin.set_fact:
+    _sd_hw: "{{ _sd_status_raw.stdout[_sd_status_raw.stdout.find('{') :] | from_json }}"
+
+- name: Report
+  ansible.builtin.debug:
+    msg: "{{ _report.splitlines() }}"
+  vars:
+    _b: "{{ _sd_hw.battery }}"
+    _t: "{{ _sd_hw.thermals }}"
+    _f: "{{ _sd_hw.fan }}"
+    _p: "{{ _sd_hw.power }}"
+    _s: "{{ _sd_hw.system }}"
+    _n: "{{ _sd_hw.network }}"
+    _report: |
+      ===== POWER =====
+      battery     : {{ _b.capacity_percent | default('?') }}%  {{ _b.status | default('') }}
+      mains       : {{ 'connected' if _b.mains_online | default(false) else 'on battery' }}
+      charge cap  : {{ (_b.charge_limit_percent ~ '%') if _b.charge_limit_percent else 'none' }}
+      health      : {{ _b.health_percent | default('?') }}% of design
+                    ({{ _b.charge_full | default('?') }}{{ _b.charge_unit | default('') }} of {{ _b.charge_design | default('?') }}{{ _b.charge_unit | default('') }} design)
+      cycles      : {{ _b.cycle_count | default('?') }}
+      draw        : {{ _b.current_a | default('?') }}A @ {{ _b.voltage_v | default('?') }}V
+      APU         : {{ _p.apu_current_a | default('?') }}A @ {{ _p.apu_voltage_v | default('?') }}V
+      GPU         : {{ _p.gpu_watts | default('?') }}W{{ ' of ' ~ _p.gpu_cap_watts ~ 'W cap' if _p.gpu_cap_watts else '' }}
+
+      ===== THERMALS =====
+      {% for k, v in _t.items() | sort %}
+      {{ '%-22s' | format(k) }} {{ v }}C
+      {% endfor %}
+      fan         : {{ _f.rpm | default('?') }} rpm (target {{ _f.target_rpm | default('?') }}){{ '  FAULT' if _f.fault | default(false) else '' }}
+
+      ===== STORAGE =====
+      {% for name, d in _sd_hw.storage.items() | sort %}
+      {{ '%-12s' | format(name) }} {{ '%6.1f' | format(d.free_gb) }}GB free of {{ '%6.1f' | format(d.total_gb) }}GB ({{ d.used_percent }}% used)
+      {{- '  ' ~ (d.fstype | default('?')) }}
+      {{- '  NO Proton prefixes' if d.supports_prefixes is false else '' }}
+      {% endfor %}
+
+      ===== NETWORK =====
+      docked      : {{ 'YES — the dock ethernet has carrier' if _n.docked else 'no' }}
+      {% for iface, d in _n.interfaces.items() | sort %}
+      {{ '%-12s' | format(iface) }} {{ 'UP  ' if d.carrier else 'down' }} {{ d.operstate }}
+      {{- '  ' ~ d.driver if d.driver else '' }}
+      {{- '  ' ~ d.speed_mbps ~ 'Mb/s' if d.speed_mbps is defined else '' }}
+      {{- '  ' ~ d.signal_dbm ~ 'dBm' if d.signal_dbm is defined else '' }}
+      {% endfor %}
+
+      ===== DISPLAY =====
+      {% for name, d in _sd_hw.display.items() | sort %}
+      {{ '%-12s' | format(name) }} {{ d.current_mode | default('?') }} ({{ d.available_modes | default(0) }} modes)
+      {% endfor %}
+
+      ===== SYSTEM =====
+      SteamOS     : {{ _sd_hw.os.version | default('?') }}{{ ' build ' ~ _sd_hw.os.build if _sd_hw.os.build is defined else '' }}
+      rootfs      : {{ _sd_hw.os.rootfs_fstype | default('?') }} (seal state: steamdeck_action=rootfs_report)
+      uptime      : {{ (_s.uptime_seconds / 3600) | round(1) }}h
+      load        : {{ _s.load | join(', ') }}
+      memory      : {{ _s.mem_available_gb | default('?') }}GB available of {{ _s.mem_total_gb | default('?') }}GB
+      kernel      : {{ _s.kernel }}
+
+- name: Warn on anything out of range
+  # Reported rather than asserted: a hot APU under load is normal, and failing a read-only status
+  # play for it would make the play unusable exactly when it is most wanted. These are thresholds
+  # worth a human glance, not faults.
+  ansible.builtin.debug:
+    msg: "{{ _warnings }}"
+  vars:
+    _b: "{{ _sd_hw.battery }}"
+    _f: "{{ _sd_hw.fan }}"
+    _warnings: >-
+      {{ ([]
+          + (['BATTERY HEALTH ' ~ _b.health_percent ~ '% of design — significant capacity loss']
+             if (_b.health_percent | default(100)) < 80 else [])
+          + (['FAN FAULT — the fan is not reporting a speed']
+             if _f.fault | default(false) else [])
+          + (['DECK SENSOR ' ~ (_sd_hw.thermals.deck_battery_temp | default(0)) ~ 'C']
+             if (_sd_hw.thermals.deck_battery_temp | default(0)) > 55 else [])
+          + (['ROOT FILESYSTEM ' ~ (_sd_hw.storage.root.used_percent | default(0)) ~ '% full —
+             SteamOS stages an A/B update into this partition, so it needs headroom well before
+             it is actually full']
+             if (_sd_hw.storage.root.used_percent | default(0)) > 80 else [])
+          + (_sd_hw.storage | dict2items
+             | rejectattr('key', 'equalto', 'root') | rejectattr('key', 'equalto', 'home')
+             | selectattr('value.used_percent', 'defined')
+             | selectattr('value.used_percent', '>', 90)
+             | map(attribute='key') | map('regex_replace', '^(.*)$', 'SD CARD \\1 is over 90% full')
+             | list)
+         ) | default(['nothing out of range'], true) }}

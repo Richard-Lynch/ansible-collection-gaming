@@ -1,0 +1,56 @@
+---
+# DISPATCHER. Selects an entrypoint by `dst_action`.
+#
+#   probe        can this host run it? podman, systemd --user, linger, SELinux, ports  (read-only)
+#   status       units, readiness, players, build, mods, backups, restart-needed       (read-only)
+#   deploy       files + image + units + control endpoint     (preview; writes with dst_apply)
+#   start        start the cluster and wait until every shard listens               (starts it)
+#   stop         stop it — every shard saves — and prove each exited cleanly         (stops it)
+#   restart      stop, then start                                            (drops players!)
+#   update       steamcmd update + mod download, with the server stopped  (writes with apply)
+#   backup       list archives; take one with dst_apply (server must be stopped)
+#   restore      restore the archive NAMED by dst_restore_confirm (moves the current aside)
+#   regenerate   discard the world (moved aside) so the next start generates a fresh one
+#   purge        DELETE the whole data root, worlds and backups too (dst_purge_confirm=<instance>)
+#   players      the raw client table from the master's console           (read-only)
+#   mods_report  declared vs downloaded mods, their real option names       (read-only)
+#   uninstall    remove units/endpoint/image; KEEPS saves (dst_uninstall_confirm=<instance>)
+#
+# RUN `probe` FIRST on a new host, then `deploy` without dst_apply to read the diff.
+
+- name: Assert a known action was requested
+  ansible.builtin.assert:
+    that:
+      - dst_action | default('probe') in _actions
+    fail_msg: >-
+      Unknown dst_action '{{ dst_action | default('(unset)') }}'.
+      Choose one of: {{ _actions | join(', ') }}.
+    quiet: true
+  vars:
+    _actions:
+      - probe
+      - status
+      - deploy
+      - start
+      - stop
+      - restart
+      - update
+      - backup
+      - restore
+      - regenerate
+      - purge
+      - players
+      - mods_report
+      - uninstall
+
+- name: Resolve and validate the declared cluster
+  ansible.builtin.include_tasks: setup_vars.yml
+
+- name: Report advisories
+  # Valid but probably unintended — see setup_vars.yml.
+  ansible.builtin.debug:
+    msg: "{{ _dst_advisories }}"
+  when: _dst_advisories | length > 0
+
+- name: Run the requested action
+  ansible.builtin.include_tasks: "{{ dst_action }}.yml"

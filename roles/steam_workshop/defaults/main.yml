@@ -1,0 +1,29 @@
+---
+# AUTO-GENERATED defaults file — DO NOT EDIT.
+#
+# Source of truth: roles/steam_workshop/meta/argument_specs.py
+# Regenerate:      venv/bin/python tools/argspec/cli.py x generate steam_workshop
+#
+# Edits here are silently overwritten on the next generation. To change a value or its
+# documentation, change the OptionSpec in the source file above — descriptions there
+# are emitted as the comments in this file.
+# Entrypoint:      main
+
+# Actually subscribe/unsubscribe. Default false reports the plan only.
+steam_workshop_apply__default: false
+
+# The declared subscriptions.
+steam_workshop_items__default: []
+
+# 1Password item holding the account owner's Steam Web API key (minted
+# at steamcommunity.com/dev/apikey, once, by the account holder). Required.
+steam_workshop_api_key_item__default: ''
+
+# Field of the item holding the key.
+steam_workshop_api_key_field__default: credential
+
+# 1Password vault of the key item. Required.
+steam_workshop_secret_vault__default: ''
+
+# Web API base URL. Only tests point it elsewhere.
+steam_workshop_api_base__default: https://api.steampowered.com

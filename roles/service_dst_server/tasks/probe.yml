@@ -1,0 +1,117 @@
+---
+# ENTRYPOINT: can this host run the server, and what is already there? READ-ONLY.
+#
+#   dst_action=probe
+#
+# Every check is the property the server actually DEPENDS ON, not a proxy for it: a rootless
+# podman that can run a container (not merely a podman binary), a user manager that is running
+# (not merely installed), the specific UDP ports being FREE, and free space where the install
+# will go.
+
+- name: Probe the host
+  ansible.builtin.command:
+    argv:
+      - "{{ dst_python }}"
+      - -c
+      - |
+        import json, os, shutil, subprocess, sys
+        root, podman, ports, image = sys.argv[1], sys.argv[2], [int(p) for p in sys.argv[3].split(',')], sys.argv[4]
+        def run(*a, timeout=30):
+            try:
+                p = subprocess.run(list(a), capture_output=True, text=True, timeout=timeout)
+                return p.returncode, (p.stdout or '').strip(), (p.stderr or '').strip()
+            except Exception as e:
+                return 127, '', str(e)
+        out = {}
+        rc, so, se = run(podman, 'info', '--format', 'json')
+        if rc == 0:
+            i = json.loads(so)
+            h, s = i.get('host', {}), i.get('store', {})
+            out['podman'] = {'version': i.get('version', {}).get('Version'),
+                             'rootless': h.get('security', {}).get('rootless'),
+                             'cgroup_version': h.get('cgroupVersion'),
+                             'cgroup_manager': h.get('cgroupManager'),
+                             'selinux': h.get('security', {}).get('selinuxEnabled'),
+                             'graph_driver': s.get('graphDriverName'),
+                             'graph_root': s.get('graphRoot'),
+                             'log_driver': h.get('logDriver')}
+        else:
+            out['podman'] = {'error': se or so or 'podman info failed (rc %d)' % rc}
+        out['user_manager'] = run('systemctl', '--user', 'is-system-running')[1] or 'unknown'
+        out['linger'] = run('loginctl', 'show-user', str(os.getuid()), '--property=Linger', '--value')[1]
+        out['selinux'] = run('getenforce')[1] or 'absent'
+        out['firewalld'] = run('firewall-cmd', '--state')[1] or 'absent/unreadable'
+        out['default_zone'] = run('firewall-cmd', '--get-default-zone')[1]
+        busy = {}
+        tables = ''
+        for t in ('/proc/net/udp', '/proc/net/udp6'):
+            try:
+                tables += open(t).read()
+            except OSError:
+                pass
+        for p in ports:
+            want = ':%04X ' % p
+            busy[p] = any(want in line and line.split()[3] == '07' for line in tables.splitlines()[1:])
+        out['udp_ports_in_use'] = {str(k): v for k, v in busy.items()}
+        probe_dir = root
+        while not os.path.exists(probe_dir):
+            probe_dir = os.path.dirname(probe_dir)
+        du = shutil.disk_usage(probe_dir)
+        out['free_gb_at_root'] = round(du.free / 1e9, 1)
+        out['installed'] = os.path.exists(os.path.join(root, 'server', 'bin64'))
+        try:
+            out['server_build'] = open(os.path.join(root, 'server', 'version.txt')).read().strip()
+        except OSError:
+            out['server_build'] = None
+        out['image_present'] = run(podman, 'image', 'exists', image)[0] == 0
+        out['python'] = sys.version.split()[0]
+        print(json.dumps(out))
+      - "{{ _dst_root }}"
+      - "{{ dst_podman }}"
+      - "{{ (_dst_all_ports | map('string') | join(',')) }}"
+      - "{{ _dst_image }}"
+  register: _dst_probe_raw
+  changed_when: false
+
+- name: Parse the probe
+  ansible.builtin.set_fact:
+    _dst_probe: "{{ _dst_probe_raw.stdout | from_json }}"
+
+- name: Read the units' state
+  ansible.builtin.command:
+    argv: >-
+      {{ ['systemctl', '--user', 'show', '--property=Id', '--property=LoadState',
+          '--property=ActiveState', '--property=UnitFileState', _dst_target, _dst_prepare_unit, _dst_control_unit]
+         + (_dst_shards | map(attribute='unit') | list) }}
+  register: _dst_probe_units
+  changed_when: false
+
+- name: Report
+  ansible.builtin.debug:
+    msg:
+      - "podman: {{ _dst_probe.podman }}"
+      - >-
+        user manager: {{ _dst_probe.user_manager }}; linger: {{ _dst_probe.linger | default('?') }}
+        {{ '(units stop when the user logs out — fine on an auto-login box, else set dst_linger)'
+           if _dst_probe.linger | default('') != 'yes' else '' }}
+      - "SELinux: {{ _dst_probe.selinux }}; firewalld: {{ _dst_probe.firewalld }} (default zone {{ _dst_probe.default_zone | default('?') }})"
+      - >-
+        UDP ports already bound (must all be false before first start, or the shard cannot bind):
+        {{ _dst_probe.udp_ports_in_use }}
+      - "free space where it installs ({{ _dst_root }}): {{ _dst_probe.free_gb_at_root }} GB (server + mods want ~2 GB, plus backups)"
+      - "installed: {{ _dst_probe.installed }} (build {{ _dst_probe.server_build | default('none', true) }}); image {{ _dst_image }} present: {{ _dst_probe.image_present }}"
+      - "python: {{ _dst_probe.python }}"
+      - "units: {{ _dst_probe_units.stdout | replace('\n\n', ' | ') | replace('\n', ' ') }}"
+
+- name: Verdict
+  ansible.builtin.assert:
+    that:
+      - _dst_probe.podman.rootless | default(false) | bool
+      - _dst_probe.user_manager in ['running', 'degraded']
+      - (_dst_probe.free_gb_at_root | float) >= 3
+    fail_msg: >-
+      This host cannot run the server as declared: need a working ROOTLESS podman (got
+      {{ _dst_probe.podman }}), a running systemd --user manager (got
+      '{{ _dst_probe.user_manager }}'), and >= 3 GB free (got {{ _dst_probe.free_gb_at_root }} GB).
+    success_msg: "Host can run it. Next: dst_action=deploy (preview), then dst_apply=true."
+    quiet: true
