@@ -7,6 +7,7 @@
 .github/workflows/disclose.yml
 .github/workflows/release.yml
 .gitignore
+.python-version
 CHANGELOG.md
 LICENSE
 README.md
@@ -26,6 +27,7 @@ plugins/filter/dst_modoverrides.yml
 plugins/filter/dst_mods_setup.yml
 plugins/filter/to_dst_ini.yml
 plugins/filter/to_dst_lua.yml
+renovate.json
 roles/decky_plugin/README.md
 roles/decky_plugin/defaults/main.yml
 roles/decky_plugin/defaults/verify.yml
