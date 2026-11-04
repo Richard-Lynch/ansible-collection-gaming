@@ -278,6 +278,75 @@
         tasks_from: config
       vars: *base
 
+    # ------------------------------------------------------ --check wins over dst_apply=true
+    # A task-level `check_mode: false` overrides the run's --check, so a write guarded by
+    # `check_mode: not dst_apply` alone writes for real under --check with dst_apply=true.
+    # check_apply.yml runs config.yml that way with a changed description; the file must not move.
+    - name: Read cluster.ini before the --check run
+      ansible.builtin.stat:
+        path: "{{ _dst_cluster_path }}/cluster.ini"
+        checksum_algorithm: sha256
+      register: _ini_before
+
+    - name: Clear the previous --check run's record
+      # Not a change to anything under test: the record is this scenario's own output, rewritten
+      # by every run.
+      ansible.builtin.file:
+        path: "{{ _root }}-check-result.json"
+        state: absent
+      changed_when: false
+
+    - name: Write the --check run's variables
+      ansible.builtin.copy:
+        dest: "{{ _root }}-check-vars.json"
+        mode: "0600"
+        content: >-
+          {{ _base | combine({'dst_cluster_description': 'changed under --check',
+                              'check_result_file': _root ~ '-check-result.json'}) | to_nice_json }}
+
+    - name: Run config.yml under a real --check with dst_apply=true
+      # ansible-playbook from PATH, as molecule itself runs it; the scenario's ANSIBLE_ROLES_PATH and
+      # ANSIBLE_COLLECTIONS_PATH reach it through the environment.
+      ansible.builtin.command:
+        argv:
+          - ansible-playbook
+          - --check
+          - -i
+          - localhost,
+          - -c
+          - local
+          - -e
+          - "ansible_python_interpreter={{ ansible_playbook_python }}"
+          - -e
+          - "@{{ _root }}-check-vars.json"
+          - "{{ playbook_dir }}/check_apply.yml"
+      register: _check_apply
+      changed_when: false
+      failed_when: false
+
+    - name: Read cluster.ini after the --check run
+      ansible.builtin.stat:
+        path: "{{ _dst_cluster_path }}/cluster.ini"
+        checksum_algorithm: sha256
+      register: _ini_after
+
+    - name: Under --check with dst_apply=true, the write is previewed and nothing changes on disk
+      ansible.builtin.assert:
+        that:
+          - _check_apply.rc == 0
+          - _check_result.cluster_ini_would_change
+          - _ini_after.stat.checksum == _ini_before.stat.checksum
+        fail_msg: >-
+          --check with dst_apply=true: rc={{ _check_apply.rc }},
+          would change={{ _check_result.cluster_ini_would_change | default('?') }},
+          cluster.ini {{ 'UNCHANGED' if _ini_after.stat.checksum == _ini_before.stat.checksum
+                          else 'WRITTEN FOR REAL' }}.
+          Last lines: {{ (_check_apply.stdout_lines + _check_apply.stderr_lines)[-12:] }}
+      vars:
+        _check_result: >-
+          {{ lookup('ansible.builtin.file', _root ~ '-check-result.json', errors='ignore')
+             | default('{}', true) | from_json }}
+
     - name: Create the rendered-templates directory
       ansible.builtin.file:
         path: "{{ _root }}/rendered"

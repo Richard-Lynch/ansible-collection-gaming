@@ -9,7 +9,13 @@
     steamdeck_remove_app: "{{ steamdeck_remove_app | default(steamdeck_remove_app__default) }}"
     steamdeck_remove_confirm: "{{ steamdeck_remove_confirm | default(steamdeck_remove_confirm__default) }}"
     steamdeck_remove_data: "{{ steamdeck_remove_data | default(steamdeck_remove_data__default) }}"
-    steamdeck_helper_dir: "{{ steamdeck_helper_dir | default(steamdeck_helper_dir__default) }}"
+    # Empty (the default) means a stable per-user directory, derived from the target's HOME: a
+    # helper staged in /tmp is gone after every reboot, so its copy would report changed each run.
+    # Derived only when facts were gathered; the entrypoints that stage a helper need them anyway,
+    # and _helper_dir.yml says so if they are missing. The others never read it.
+    steamdeck_helper_dir: >-
+      {{ (steamdeck_helper_dir | default(steamdeck_helper_dir__default))
+         or (_sd_helper_dir_derived if ansible_env is defined else '') }}
     steamdeck_steam_userdir: "{{ steamdeck_steam_userdir | default(steamdeck_steam_userdir__default) }}"
     steamdeck_decky_settings_files: "{{ steamdeck_decky_settings_files | default(steamdeck_decky_settings_files__default) }}"
     steamdeck_decky_settings: "{{ steamdeck_decky_settings | default(steamdeck_decky_settings__default) }}"
@@ -69,6 +75,9 @@
 # the secret never appears in a file that is read for other reasons — and through the CACHED
 # lookup, so the value is fetched once rather than by a bare `op` call on every run (which can
 # raise an interactive approval prompt each time).
+  vars:
+    _sd_helper_dir_derived: "{{ ansible_env.HOME ~ '/.local/share/richard_lynch.gaming/steamdeck' }}"
+
 - name: Assert the sudo password's vault is named
   ansible.builtin.assert:
     that:
@@ -86,3 +95,10 @@
                 field='password', vault=steamdeck_sudo_secret_vault) }}
   no_log: true
   when: steamdeck_sudo_secret_item | length > 0
+
+- name: Decide whether this run writes
+  # steamdeck_apply asks for the write, and a real --check still only previews it: a write, and
+  # the read-back that verifies it, key on this rather than on steamdeck_apply alone, so --check
+  # with steamdeck_apply=true reports the plan and stops there.
+  ansible.builtin.set_fact:
+    _sd_write: "{{ (steamdeck_apply | bool) and not ansible_check_mode }}"

@@ -69,11 +69,16 @@
       plugin.
     quiet: true
 
+- name: Ensure the helper directory exists
+  ansible.builtin.include_tasks: _helper_dir.yml
+
 - name: Install the theme helper
   ansible.builtin.copy:
     src: css_themes.py
     dest: "{{ steamdeck_helper_dir }}/css_themes.py"
     mode: "0755"
+  # The role's own tool in its own directory, needed by the report under --check too.
+  check_mode: false
 
 - name: Report what would change
   # Report mode downloads each theme zip to MEMORY to read its theme.json — the API record does
@@ -90,6 +95,7 @@
       - --remove
       - "{{ steamdeck_css_remove | to_json }}"
   register: _sd_css_plan
+  check_mode: false # a read: under --check the report must still have something to parse
   changed_when: false
   # Non-zero means a declared patch name or value does not exist in the theme. That is a real
   # configuration error and the next task asserts on it — but it must not abort the play before
@@ -128,7 +134,7 @@
         {{ _prob }}
       {% endfor %}
       {% endif %}
-      {{ '' if (steamdeck_apply | bool) else '(report only — re-run with steamdeck_apply=true)' }}
+      {{ '' if (_sd_write | bool) else '(report only: --check)' if (steamdeck_apply | bool) else '(report only — re-run with steamdeck_apply=true)' }}
 
 - name: Assert every declared patch is real
   # A hard stop, because the alternative is CSS Loader silently substituting its own default and
@@ -141,7 +147,11 @@
     quiet: true
 
 - name: Apply the themes
-  when: steamdeck_apply | bool
+  # Only when the plan has something to do: Decky is stopped for the write and started after it,
+  # and a restart with nothing to write is a change the run did not need.
+  when:
+    - _sd_write | bool
+    - (_sd_css_plan.stdout[_sd_css_plan.stdout.find('{') :] | from_json).changed | bool
   block:
     - name: Stop Decky before writing theme configuration
       ansible.builtin.systemd_service:
@@ -191,7 +201,7 @@
   register: _sd_css_after
   changed_when: false
   failed_when: false
-  when: steamdeck_apply | bool
+  when: _sd_write | bool
 
 - name: Assert the themes kept their configuration
   ansible.builtin.assert:
@@ -202,11 +212,11 @@
       {{ (_sd_css_after.stdout[_sd_css_after.stdout.find('{') :] | from_json).themes
          | selectattr('actions') | map(attribute='name') | join(', ') }}
     quiet: true
-  when: steamdeck_apply | bool
+  when: _sd_write | bool
 
 - name: Report the result
   ansible.builtin.debug:
     msg:
       - "{{ steamdeck_css_themes | map(attribute='name') | join(', ') }} installed and verified."
       - "Themes apply to the Steam UI immediately; a Steam restart is not needed."
-  when: steamdeck_apply | bool
+  when: _sd_write | bool

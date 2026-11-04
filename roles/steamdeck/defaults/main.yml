@@ -36,8 +36,11 @@ steamdeck_remove_confirm__default: ''
 # shortcut. False removes the library entry and leaves the data.
 steamdeck_remove_data__default: true
 
-# Where role helper scripts are staged on the target.
-steamdeck_helper_dir__default: /tmp
+# Where role helper scripts are staged on the target. Empty means
+# ~/.local/share/richard_lynch.gaming/steamdeck under the target user's
+# HOME: a stable per-user directory, so an unchanged helper is not
+# rewritten after every reboot.
+steamdeck_helper_dir__default: ''
 
 # Steam per-account config directory, e.g. ~/.steam/steam/userdata/NNN.
 # Discovered automatically when empty; name it explicitly only if the

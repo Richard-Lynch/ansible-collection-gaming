@@ -92,6 +92,7 @@
     cmd: "steam_shortcuts_merge.py --path '{{ _sd_shortcuts_path }}' --desired '{{ _sd_desired | to_json }}'"
     executable: /usr/bin/python3
   register: _sd_merge_dry
+  check_mode: false # a read: under --check the report must still have something to parse
   changed_when: false
 
 - name: Report the plan
@@ -108,7 +109,7 @@
          | map(attribute='name') | list }}
     _report: |
       ===== SHORTCUT PLAN =====
-      {{ 'APPLYING' if (steamdeck_apply | bool) else 'WOULD APPLY' }} to {{ _sd_shortcuts_path }}
+      {{ 'APPLYING' if (_sd_write | bool) else 'WOULD APPLY' }} to {{ _sd_shortcuts_path }}
 
       changes ({{ _m.changes | length }}):
       {% for c in _m.changes %}
@@ -133,7 +134,7 @@
   changed_when: (_sd_steam_kill.rc | int) == 0
   failed_when: false
   when:
-    - steamdeck_apply | bool
+    - _sd_write | bool
     - (_sd_merge_dry.stdout[_sd_merge_dry.stdout.find('{') :] | from_json).changed | bool
 
 - name: Wait for Steam to exit
@@ -142,7 +143,7 @@
   ansible.builtin.wait_for:
     timeout: "{{ steamdeck_steam_stop_wait | int }}"
   when:
-    - steamdeck_apply | bool
+    - _sd_write | bool
     - _sd_steam_kill.changed | default(false)
 
 - name: Apply the shortcuts
@@ -152,7 +153,7 @@
   register: _sd_merge
   changed_when: (_sd_merge.stdout[_sd_merge.stdout.find('{') :] | from_json).applied | bool
   when:
-    - steamdeck_apply | bool
+    - _sd_write | bool
     - (_sd_merge_dry.stdout[_sd_merge_dry.stdout.find('{') :] | from_json).changed | bool
 
 - name: Read the shortcuts back
@@ -163,7 +164,7 @@
     executable: /usr/bin/python3
   register: _sd_after_raw
   changed_when: false
-  when: steamdeck_apply | bool
+  when: _sd_write | bool
 
 - name: Assert every managed shortcut is present
   ansible.builtin.assert:
@@ -180,7 +181,7 @@
     _sd_names: >-
       {{ (_sd_after_raw.stdout[_sd_after_raw.stdout.find('{') :] | from_json).shortcuts.values()
          | map(attribute='AppName') | list }}
-  when: steamdeck_apply | bool
+  when: _sd_write | bool
 
 - name: Assert the unmanaged shortcuts survived
   # THE GUARD THAT MATTERS. A merge bug presents as shortcuts quietly vanishing from the library
@@ -201,7 +202,7 @@
     _sd_before: "{{ _sd_merge_dry.stdout[_sd_merge_dry.stdout.find('{') :] | from_json }}"
     _sd_after: "{{ _sd_merge.stdout[_sd_merge.stdout.find('{') :] | from_json }}"
   when:
-    - steamdeck_apply | bool
+    - _sd_write | bool
     - _sd_merge.changed | default(false)
 
 - name: Confirm
@@ -211,5 +212,5 @@
       shortcut(s) changed. Steam was stopped for the edit — RESTART IT (or reboot to Game Mode)
       for the change to show.
   when:
-    - steamdeck_apply | bool
+    - _sd_write | bool
     - _sd_merge.changed | default(false)

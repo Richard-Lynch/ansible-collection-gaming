@@ -106,8 +106,13 @@ argument_specs = ArgumentSpecs(
                 "steamdeck_helper_dir": OptionSpec(
                     type="str",
                     required=False,
-                    default="/tmp",
-                    description="Where role helper scripts are staged on the target.",
+                    default="",
+                    description=[
+                        "Where role helper scripts are staged on the target. Empty means",
+                        "~/.local/share/richard_lynch.gaming/steamdeck under the target user's",
+                        "HOME: a stable per-user directory, so an unchanged helper is not",
+                        "rewritten after every reboot.",
+                    ],
                 ),
                 "steamdeck_steam_userdir": OptionSpec(
                     type="str",

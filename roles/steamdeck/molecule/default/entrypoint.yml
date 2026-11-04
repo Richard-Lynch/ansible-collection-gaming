@@ -1,0 +1,21 @@
+# Run by converge.yml as a NESTED ansible-playbook, once per entrypoint and mode, with HOME pointed
+# at a fixture tree (converge.yml builds it). Nested because only a real --check sets
+# ansible_check_mode, and because HOME decides every path the role reads: the fixture is the
+# device. Nothing here talks to the network; every fixture input is local.
+---
+- name: Run one steamdeck entrypoint against the fixture HOME
+  hosts: localhost
+  gather_facts: true
+
+  vars:
+    steamdeck_css_themes: []
+    steamdeck_css_remove: [Gone]
+    steamdeck_decky_settings:
+      fixture-plugin: { enabled: true }
+    steamdeck_emudeck_settings:
+      overwriteConfigEmus: { ra: false }
+
+  tasks:
+    - name: Run the entrypoint
+      ansible.builtin.include_role:
+        name: steamdeck

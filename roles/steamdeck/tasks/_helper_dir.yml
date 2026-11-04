@@ -1,0 +1,23 @@
+---
+# INTERNAL: create the directory the role stages its helper scripts in (steamdeck_helper_dir).
+# check_mode: false because the reports run the helpers under --check too, and they can only run
+# from a directory that exists. It is the role's own private directory, not device configuration.
+- name: Require a helper directory
+  ansible.builtin.assert:
+    that:
+      - steamdeck_helper_dir | length > 0
+    fail_msg: >-
+      steamdeck_helper_dir is empty and could not be derived: gather facts (it defaults to
+      ~/.local/share/richard_lynch.gaming/steamdeck under the target's HOME) or set it.
+    quiet: true
+
+- name: Create the helper directory
+  # 0700 only for the derived default, which the role owns outright. A directory the caller names
+  # (it may be shared, such as /tmp) is created if missing and its mode left alone.
+  ansible.builtin.file:
+    path: "{{ steamdeck_helper_dir }}"
+    state: directory
+    mode: "{{ '0700' if steamdeck_helper_dir == _sd_derived else omit }}"
+  vars:
+    _sd_derived: "{{ ansible_env.HOME | default('') ~ '/.local/share/richard_lynch.gaming/steamdeck' }}"
+  check_mode: false

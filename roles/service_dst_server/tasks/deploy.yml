@@ -25,12 +25,16 @@
         --value,
       ]
   register: _dst_deploy_state
+  check_mode: false # a read: under --check the report must still have something to parse
   changed_when: false
 
 - name: Report
   ansible.builtin.debug:
     msg:
-      - "{{ 'APPLIED.' if dst_apply | bool else 'PREVIEW ONLY — re-run with dst_apply=true to write it.' }}"
+      - >-
+        {{ 'PREVIEW ONLY (--check): nothing was written.' if ansible_check_mode
+           else 'APPLIED.' if dst_apply | bool
+           else 'PREVIEW ONLY — re-run with dst_apply=true to write it.' }}
       - >-
         Cluster '{{ dst_cluster_name }}' ({{ dst_cluster_dir_name }}) at {{ _dst_cluster_path }};
         shards {{ _dst_enabled_shards | map(attribute='name') | join(' + ') }};

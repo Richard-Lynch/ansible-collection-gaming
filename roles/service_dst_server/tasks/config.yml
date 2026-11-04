@@ -4,7 +4,9 @@
 # scenario converges for real.
 #
 # GENERATE, DON'T APPLY. Every write runs in check mode with a diff unless dst_apply is true, so a
-# bare run prints exactly what would change. A file that does not exist yet has no parent to diff
+# bare run prints exactly what would change. A real --check wins over dst_apply: the expression is
+# `ansible_check_mode or not dst_apply`, because a task-level `check_mode: false` overrides the
+# run's --check, and `not dst_apply` alone would write for real under --check with dst_apply=true. A file that does not exist yet has no parent to diff
 # into, so on a host that was never deployed the preview says so instead of failing.
 
 - name: Resolve the credentials
@@ -29,7 +31,7 @@
   loop: >-
     {{ (_dst_dirs.values() | list) + [_dst_root ~ '/data/DoNotStarveTogether', _dst_cluster_path]
        + (_dst_shards | map(attribute='path') | list) }}
-  check_mode: "{{ not (dst_apply | bool) }}"
+  check_mode: "{{ ansible_check_mode or not (dst_apply | bool) }}"
   when: dst_apply | bool
 
 - name: Report a fresh install
@@ -89,7 +91,7 @@
          } | richard_lynch.gaming.to_dst_ini(header=_dst_header, extra=dst_cluster_ini_extra) }}
   # 0600 and no_log: it carries the join password and the shard key.
   no_log: true
-  check_mode: "{{ not (dst_apply | bool) }}"
+  check_mode: "{{ ansible_check_mode or not (dst_apply | bool) }}"
   when: dst_apply | bool or _dst_cluster_path in _dst_exists
   register: _dst_w_cluster
 
@@ -99,7 +101,7 @@
     mode: "0600"
     content: "{{ _dst_token }}"
   no_log: true
-  check_mode: "{{ not (dst_apply | bool) }}"
+  check_mode: "{{ ansible_check_mode or not (dst_apply | bool) }}"
   when:
     - not (dst_offline | bool)
     - dst_apply | bool or _dst_cluster_path in _dst_exists
@@ -111,7 +113,7 @@
   ansible.builtin.file:
     path: "{{ _dst_cluster_path }}/cluster_token.txt"
     state: absent
-  check_mode: "{{ not (dst_apply | bool) }}"
+  check_mode: "{{ ansible_check_mode or not (dst_apply | bool) }}"
   when: dst_offline | bool
   register: _dst_w_token_rm
 
@@ -127,7 +129,7 @@
   loop_control:
     label: "{{ item.file }} ({{ item.ids | length }})"
   diff: true
-  check_mode: "{{ not (dst_apply | bool) }}"
+  check_mode: "{{ ansible_check_mode or not (dst_apply | bool) }}"
   when: dst_apply | bool or _dst_cluster_path in _dst_exists
   register: _dst_w_lists
 
@@ -207,7 +209,7 @@
            'ACCOUNT': {'encode_user_path': true},
          } | richard_lynch.gaming.to_dst_ini(header=_dst_header, extra=shard.server_ini_extra) }}
   diff: true
-  check_mode: "{{ not (dst_apply | bool) }}"
+  check_mode: "{{ ansible_check_mode or not (dst_apply | bool) }}"
   when:
     - dst_apply | bool or shard.path in _dst_exists
     - (_dst_cur_ini_text[shard.path] | default('') | richard_lynch.gaming.dst_ini_parse) != (_server_ini | richard_lynch.gaming.dst_ini_parse)
@@ -233,7 +235,7 @@
     loop_var: shard
     label: "{{ shard.name }}"
   diff: true
-  check_mode: "{{ not (dst_apply | bool) }}"
+  check_mode: "{{ ansible_check_mode or not (dst_apply | bool) }}"
   when:
     - dst_apply | bool or shard.path in _dst_exists
     - shard.path not in _dst_has_world
@@ -254,7 +256,7 @@
          else ('worldgenoverride.lua'
                if (item[0].worldgen_preset | length > 0 or item[0].worldgen_overrides | length > 0)
                else '') }}
-  check_mode: "{{ not (dst_apply | bool) }}"
+  check_mode: "{{ ansible_check_mode or not (dst_apply | bool) }}"
   when:
     - dst_apply | bool or item[0].path in _dst_exists
     - item[0].path not in _dst_has_world
@@ -280,7 +282,7 @@
     loop_var: shard
     label: "{{ shard.name }}"
   diff: true
-  check_mode: "{{ not (dst_apply | bool) }}"
+  check_mode: "{{ ansible_check_mode or not (dst_apply | bool) }}"
   when: dst_apply | bool or shard.path in _dst_exists
   register: _dst_w_modoverrides
 
@@ -293,7 +295,7 @@
     mode: "0644"
     content: "{{ _dst_mods | richard_lynch.gaming.dst_mods_setup(dst_mod_collections, header=_dst_header) }}"
   diff: true
-  check_mode: "{{ not (dst_apply | bool) }}"
+  check_mode: "{{ ansible_check_mode or not (dst_apply | bool) }}"
   when: dst_apply | bool or _dst_dirs.config in _dst_exists
   register: _dst_w_modsetup
 

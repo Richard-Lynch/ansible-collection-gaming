@@ -37,11 +37,16 @@
 - name: Apply role defaults
   ansible.builtin.include_tasks: setup_vars.yml
 
+- name: Ensure the helper directory exists
+  ansible.builtin.include_tasks: _helper_dir.yml
+
 - name: Install the settings helper
   ansible.builtin.copy:
     src: emudeck_settings.py
     dest: "{{ steamdeck_helper_dir }}/emudeck_settings.py"
     mode: "0755"
+  # The role's own tool in its own directory, needed by the report under --check too.
+  check_mode: false
 
 - name: Resolve the EmuDeck secrets from 1Password
   # Through richard_lynch.common.onepassword_cached, NOT a bare `op` call: the cached lookup
@@ -94,6 +99,7 @@
       - --settings
       - "{{ steamdeck_emudeck_settings | to_json }}"
   register: _sd_ed_plan
+  check_mode: false # a read: under --check the report must still have something to parse
   changed_when: false
   failed_when: false
 
@@ -119,7 +125,7 @@
         {{ c }}
       {% endfor %}
 
-      {{ '' if (steamdeck_apply | bool) else '(report only — re-run with steamdeck_apply=true)' }}
+      {{ '' if (_sd_write | bool) else '(report only: --check)' if (steamdeck_apply | bool) else '(report only — re-run with steamdeck_apply=true)' }}
 
 - name: Apply the settings
   ansible.builtin.command:
@@ -135,7 +141,7 @@
       - --apply
   register: _sd_ed_apply
   changed_when: (_sd_ed_apply.stdout[_sd_ed_apply.stdout.find('{') :] | from_json).changed | bool
-  when: steamdeck_apply | bool
+  when: _sd_write | bool
   # The secrets document is on this task's command line, so the task itself must not be logged.
   # The helper's OUTPUT is already masked, which is why the report below can still be shown.
   no_log: true
@@ -156,7 +162,7 @@
   register: _sd_ed_after
   changed_when: false
   failed_when: false
-  when: steamdeck_apply | bool
+  when: _sd_write | bool
   no_log: true
 
 - name: Assert the settings landed and the file is no longer world-readable
@@ -167,7 +173,7 @@
       settings.json did not match after the write:
       {{ (_sd_ed_after.stdout[_sd_ed_after.stdout.find('{') :] | from_json).changes | join('; ') }}
     quiet: true
-  when: steamdeck_apply | bool
+  when: _sd_write | bool
 
 - name: Report the result
   ansible.builtin.debug:
@@ -177,4 +183,4 @@
       - >-
         NOTE this changes what a FUTURE setup.sh run would do. It does not reconfigure any
         emulator now — run EmuDeck itself for that.
-  when: steamdeck_apply | bool
+  when: _sd_write | bool

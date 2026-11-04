@@ -107,6 +107,10 @@
     quiet: true
   when: steamdeck_apply | bool
 
+- name: Ensure the helper directory exists
+  ansible.builtin.include_tasks: _helper_dir.yml
+  when: steamdeck_apply | bool
+
 - name: Stage the shortcut helper for the read-back
   ansible.builtin.copy:
     src: steam_shortcuts.py

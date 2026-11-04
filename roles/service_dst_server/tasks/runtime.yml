@@ -3,7 +3,8 @@
 # control endpoint. Runs after config.yml in `deploy`.
 #
 # Same generate-don't-apply contract as config.yml: without dst_apply every write is previewed in
-# check mode with a diff, and nothing is built, enabled or started.
+# check mode with a diff, and nothing is built, enabled or started. A real --check wins over
+# dst_apply (config.yml says why), and the read-backs of what a converge did are skipped under it.
 #
 # A RUNNING SERVER IS NEVER RESTARTED BY A DEPLOY. Restarting it would drop everyone playing. A
 # deploy that changed anything the running shards read reports "restart to apply" and leaves the
@@ -42,7 +43,7 @@
     mode: "0755"
   loop: [dst-shard.sh, dst-console.sh, dst-prepare.sh]
   diff: true
-  check_mode: "{{ not (dst_apply | bool) }}"
+  check_mode: "{{ ansible_check_mode or not (dst_apply | bool) }}"
   when: dst_apply | bool or _dst_dirs.build in _dst_rt_exists
 
 - name: Write the Containerfile
@@ -51,13 +52,14 @@
     dest: "{{ _dst_dirs.build }}/Containerfile"
     mode: "0644"
   diff: true
-  check_mode: "{{ not (dst_apply | bool) }}"
+  check_mode: "{{ ansible_check_mode or not (dst_apply | bool) }}"
   when: dst_apply | bool or _dst_dirs.build in _dst_rt_exists
 
 - name: Is the image for these build inputs already present?
   ansible.builtin.command:
     argv: ["{{ dst_podman }}", image, exists, "{{ _dst_image }}"]
   register: _dst_image_exists
+  check_mode: false # a read: under --check the report must still have something to parse
   changed_when: false
   failed_when: _dst_image_exists.rc not in [0, 1]
 
@@ -94,7 +96,11 @@
       ]
   register: _dst_image_inspect
   changed_when: false
-  when: dst_apply | bool
+  # Not under --check: a build the run would make was only simulated, so the gate would fail a
+  # correct dry run.
+  when:
+    - dst_apply | bool
+    - not ansible_check_mode
 
 # ------------------------------------------------------------------------------- host scripts
 - name: Install the host scripts
@@ -104,7 +110,7 @@
     mode: "0755"
   loop: [dst-prepare-host.sh, dst-backup.sh]
   diff: true
-  check_mode: "{{ not (dst_apply | bool) }}"
+  check_mode: "{{ ansible_check_mode or not (dst_apply | bool) }}"
   when: dst_apply | bool or _dst_dirs.bin in _dst_rt_exists
   register: _dst_rt_scripts
 
@@ -113,7 +119,7 @@
     src: dst_control.py
     dest: "{{ _dst_dirs.bin }}/dst_control.py"
     mode: "0755"
-  check_mode: "{{ not (dst_apply | bool) }}"
+  check_mode: "{{ ansible_check_mode or not (dst_apply | bool) }}"
   when: dst_apply | bool or _dst_dirs.bin in _dst_rt_exists
   register: _dst_rt_control_py
 
@@ -137,7 +143,7 @@
            'shards': _dst_enabled_shards | map('richard_lynch.gaming.dst_control_shard', _dst_cluster_path) | list,
          } | to_nice_json(indent=2) }}
   diff: true
-  check_mode: "{{ not (dst_apply | bool) }}"
+  check_mode: "{{ ansible_check_mode or not (dst_apply | bool) }}"
   when: dst_apply | bool or _dst_dirs.state in _dst_rt_exists
   register: _dst_rt_control_cfg
 
@@ -148,7 +154,7 @@
     dest: "{{ _dst_unit_dir }}/{{ _dst_prepare_unit }}"
     mode: "0644"
   diff: true
-  check_mode: "{{ not (dst_apply | bool) }}"
+  check_mode: "{{ ansible_check_mode or not (dst_apply | bool) }}"
   when: dst_apply | bool or _dst_unit_dir in _dst_rt_exists
   register: _dst_u_prepare
 
@@ -162,7 +168,7 @@
     loop_var: shard
     label: "{{ shard.unit }}"
   diff: true
-  check_mode: "{{ not (dst_apply | bool) }}"
+  check_mode: "{{ ansible_check_mode or not (dst_apply | bool) }}"
   when: dst_apply | bool or _dst_unit_dir in _dst_rt_exists
   register: _dst_u_shards
 
@@ -172,7 +178,7 @@
     dest: "{{ _dst_unit_dir }}/{{ _dst_target }}"
     mode: "0644"
   diff: true
-  check_mode: "{{ not (dst_apply | bool) }}"
+  check_mode: "{{ ansible_check_mode or not (dst_apply | bool) }}"
   when: dst_apply | bool or _dst_unit_dir in _dst_rt_exists
   register: _dst_u_target
 
@@ -182,7 +188,7 @@
     dest: "{{ _dst_unit_dir }}/{{ _dst_control_unit }}"
     mode: "0644"
   diff: true
-  check_mode: "{{ not (dst_apply | bool) }}"
+  check_mode: "{{ ansible_check_mode or not (dst_apply | bool) }}"
   when: dst_apply | bool or _dst_unit_dir in _dst_rt_exists
   register: _dst_u_control
 
@@ -204,7 +210,7 @@
        | difference(_dst_shards | map(attribute='unit') | list
                     + [_dst_prepare_unit, _dst_control_unit])
        | map('regex_replace', '^', _dst_unit_dir ~ '/') | list }}
-  check_mode: "{{ not (dst_apply | bool) }}"
+  check_mode: "{{ ansible_check_mode or not (dst_apply | bool) }}"
   register: _dst_u_stale
 
 - name: Reload the user manager
@@ -253,9 +259,11 @@
   retries: 12
   delay: 5
   changed_when: false
+  # A read-back of what the converge above did, so not under --check, where it was only simulated.
   when:
     - dst_apply | bool
     - dst_control_enabled | bool
+    - not ansible_check_mode
 
 - name: The control endpoint must be serving this instance
   ansible.builtin.assert:
@@ -272,6 +280,7 @@
   when:
     - dst_apply | bool
     - dst_control_enabled | bool
+    - not ansible_check_mode
 
 # ------------------------------------------------------------------------------- host integration
 - name: Enable lingering for the server's user
@@ -290,6 +299,7 @@
             --value,
           ]
       register: _dst_linger_before
+      check_mode: false # a read: under --check the report must still have something to parse
       changed_when: false
 
     - name: Enable lingering
@@ -313,7 +323,7 @@
        + (_dst_enabled_shards | map(attribute='master_server_port') | list)
        + (_dst_enabled_shards | map(attribute='authentication_port') | list) }}
   become: true
-  check_mode: "{{ not (dst_apply | bool) }}"
+  check_mode: "{{ ansible_check_mode or not (dst_apply | bool) }}"
   when: dst_firewalld_manage | bool
 
 - name: Open the control endpoint's TCP port in firewalld
@@ -324,7 +334,7 @@
     immediate: true
     state: enabled
   become: true
-  check_mode: "{{ not (dst_apply | bool) }}"
+  check_mode: "{{ ansible_check_mode or not (dst_apply | bool) }}"
   when:
     - dst_firewalld_manage | bool
     - dst_control_enabled | bool
