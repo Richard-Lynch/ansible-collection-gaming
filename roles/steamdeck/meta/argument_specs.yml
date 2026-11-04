@@ -92,10 +92,14 @@ argument_specs:
         required: false
         default: true
       steamdeck_helper_dir:
-        description: Where role helper scripts are staged on the target.
+        description:
+          - Where role helper scripts are staged on the target. Empty means
+          - ~/.local/share/richard_lynch.gaming/steamdeck under the target user's
+          - 'HOME: a stable per-user directory, so an unchanged helper is not'
+          - rewritten after every reboot.
         type: str
         required: false
-        default: /tmp
+        default: ''
       steamdeck_steam_userdir:
         description:
           - Steam per-account config directory, e.g. ~/.steam/steam/userdata/NNN.

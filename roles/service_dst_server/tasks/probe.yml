@@ -71,6 +71,7 @@
       - "{{ (_dst_all_ports | map('string') | join(',')) }}"
       - "{{ _dst_image }}"
   register: _dst_probe_raw
+  check_mode: false # a read: under --check the report must still have something to parse
   changed_when: false
 
 - name: Parse the probe
@@ -84,6 +85,7 @@
           '--property=ActiveState', '--property=UnitFileState', _dst_target, _dst_prepare_unit, _dst_control_unit]
          + (_dst_shards | map(attribute='unit') | list) }}
   register: _dst_probe_units
+  check_mode: false # a read: under --check the report must still have something to parse
   changed_when: false
 
 - name: Report

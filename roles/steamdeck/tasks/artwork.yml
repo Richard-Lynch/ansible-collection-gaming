@@ -71,6 +71,12 @@
       Artwork is kept under {{ steamdeck_artwork_dir }}/<slug>/ keyed by NAME, because
       an appid changes whenever a shortcut's exe or name changes and would orphan the whole set.
 
+- name: Ensure the helper directory exists
+  ansible.builtin.include_tasks: _helper_dir.yml
+  when:
+    - steamdeck_apply | bool
+    - steamdeck_artwork_action == 'restore'
+
 - name: Stage the vendored artwork on the device
   # use_ssh_args: synchronize builds its OWN `--rsh` from the key alone and ignores
   # ANSIBLE_SSH_ARGS, so without it rsync drops any SSH options set there (an IdentityAgent=none,
@@ -80,7 +86,9 @@
     use_ssh_args: true
     src: "{{ steamdeck_artwork_dir }}/"
     dest: "{{ steamdeck_helper_dir }}/grid_artwork/"
-    delete: false
+    # The staged tree persists between runs (steamdeck_helper_dir is not /tmp), and restore reads
+    # every file under it: art removed from the source must leave the staged copy too.
+    delete: true
     rsync_opts: ["--exclude=_device", "--exclude=MANIFEST.json"]
   when:
     - steamdeck_apply | bool

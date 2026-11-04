@@ -196,3 +196,35 @@
           {{ 'Lua compile check ran with ' ~ (_lua.stdout | trim)
              if _lua.stdout | trim | length > 0
              else 'NO Lua interpreter here — generated Lua was NOT compiled (string assertions only).' }}
+
+    # runtime.yml needs podman and systemd, so molecule cannot converge it under --check the way
+    # converge.yml does config.yml. Its writes use the same check_mode expression, so read it off
+    # every task file: a check_mode keyed on dst_apply must also honour a real --check.
+    - name: Find check_mode expressions that ignore a real --check
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -c
+          - |
+            import glob, re, sys
+            files = sorted(glob.glob(sys.argv[1] + "/*.yml"))
+            if not files:
+                sys.exit(f"no task files under {sys.argv[1]}: nothing was checked")
+            # check_mode values are one line in this role; a folded one would be read as its
+            # first line, which still names dst_apply and so is still judged.
+            bad = [f"{f}:{n}" for f in files for n, line in enumerate(open(f), 1)
+                   if re.search(r"check_mode:.*dst_apply", line) and "ansible_check_mode" not in line]
+            print("\n".join(bad))
+          - "{{ playbook_dir }}/../../tasks"
+      register: _bare_check_mode
+      changed_when: false
+
+    - name: Every dst_apply-keyed check_mode honours --check
+      ansible.builtin.assert:
+        that:
+          - _bare_check_mode.rc == 0
+          - _bare_check_mode.stdout_lines | length == 0
+        fail_msg: >-
+          These writes run for real under --check with dst_apply=true (check_mode keyed on
+          dst_apply alone): {{ _bare_check_mode.stdout_lines }}
+        quiet: true

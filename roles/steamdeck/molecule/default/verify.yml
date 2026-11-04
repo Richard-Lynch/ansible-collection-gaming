@@ -32,6 +32,78 @@
         name: steamdeck
         tasks_from: setup_vars
 
+    - name: Helpers are staged in a stable per-user directory, not /tmp
+      # /tmp is emptied at every reboot, so a helper staged there is rewritten (changed) on every
+      # run after one.
+      ansible.builtin.assert:
+        that:
+          - steamdeck_helper_dir == ansible_env.HOME ~ '/.local/share/richard_lynch.gaming/steamdeck'
+        fail_msg: "steamdeck_helper_dir resolved to {{ steamdeck_helper_dir }}"
+        quiet: true
+
+    # ---------------------------------------------------------------------------------------
+    # The settings entrypoints against the fixture HOME (converge.yml ran them)
+    # ---------------------------------------------------------------------------------------
+    - name: Read the entrypoint runs
+      ansible.builtin.set_fact:
+        _runs: "{{ (lookup('ansible.builtin.file', '/tmp/molecule-steamdeck-home-results.json') | from_json) }}"
+
+    - name: Every entrypoint ran to the end, under --check and with nothing to apply
+      # Fails when a report's helper command is skipped under --check: the parse after it then
+      # has nothing to read.
+      ansible.builtin.assert:
+        that:
+          - _runs.runs | length == 9
+          - _runs.runs | map(attribute=1) | reject('equalto', 0) | list | length == 0
+        fail_msg: >-
+          {{ _runs.runs | length }} run(s); failed:
+          {% for r in _runs.runs if r[1] != 0 %}{{ r[0] }} rc={{ r[1] }}: {{ r[2][-8:] }}
+          {% endfor %}
+        quiet: true
+
+    - name: The --check runs, with and without steamdeck_apply, wrote no settings
+      ansible.builtin.assert:
+        that:
+          - _runs.files[0] == (_emudeck_fixture | hash('sha256'))
+          - _runs.files[1] == (_decky_fixture | hash('sha256'))
+        fail_msg: "a --check run changed a settings file: {{ _runs.files }}"
+        quiet: true
+      vars:
+        # converge.yml's fixture contents, byte for byte
+        _emudeck_fixture: '{"overwriteConfigEmus": {"ra": true}}'
+        _decky_fixture: "{}"
+
+    - name: An apply with nothing to change does not stop (and so restart) Decky
+      # The task after the stop is the plan's: with an empty plan the whole write block, its stop
+      # and its start, is skipped. The line after the task header says what happened to it.
+      ansible.builtin.assert:
+        that:
+          - _after_stop is match('skipping')
+        fail_msg: "Stop Decky ran on an empty plan: {{ _after_stop }}"
+        quiet: true
+      vars:
+        _lines: "{{ _runs.runs[8][2] }}"
+        _after_stop: >-
+          {%- set ns = namespace(seen=false, out='(task not in the output)') -%}
+          {%- for l in _lines -%}
+          {%- if ns.seen and l | trim | length > 0 and ns.out == '(task not in the output)' -%}
+          {%- set ns.out = l | trim -%}
+          {%- endif -%}
+          {%- if 'Stop Decky before writing theme configuration' in l -%}{%- set ns.seen = true -%}{%- endif -%}
+          {%- endfor -%}
+          {{ ns.out }}
+
+    - name: The real run staged its helper under the fixture HOME
+      ansible.builtin.stat:
+        path: /tmp/molecule-steamdeck-home/.local/share/richard_lynch.gaming/steamdeck/css_themes.py
+      register: _staged
+
+    - name: Assert the helper is in the per-user directory
+      ansible.builtin.assert:
+        that: [_staged.stat.exists]
+        fail_msg: "css_themes.py was not staged under ~/.local/share/richard_lynch.gaming/steamdeck"
+        quiet: true
+
     # ---------------------------------------------------------------------------------------
     # The signed/unsigned appid round-trip — the role's riskiest pure logic
     # ---------------------------------------------------------------------------------------

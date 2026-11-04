@@ -23,6 +23,7 @@
   ansible.builtin.command:
     argv: ["{{ dst_podman }}", image, exists, "{{ _dst_image }}"]
   register: _dst_deployed_image
+  check_mode: false # a read: under --check the report must still have something to parse
   changed_when: false
   failed_when: _dst_deployed_image.rc not in [0, 1]
 

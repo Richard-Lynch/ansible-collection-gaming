@@ -77,6 +77,7 @@ roles/service_dst_server/handlers/main.yml
 roles/service_dst_server/meta/argument_specs.py
 roles/service_dst_server/meta/argument_specs.yml
 roles/service_dst_server/meta/main.yml
+roles/service_dst_server/molecule/default/check_apply.yml
 roles/service_dst_server/molecule/default/converge.yml
 roles/service_dst_server/molecule/default/molecule.yml
 roles/service_dst_server/molecule/default/verify.yml
@@ -148,9 +149,11 @@ roles/steamdeck/meta/argument_specs.py
 roles/steamdeck/meta/argument_specs.yml
 roles/steamdeck/meta/main.yml
 roles/steamdeck/molecule/default/converge.yml
+roles/steamdeck/molecule/default/entrypoint.yml
 roles/steamdeck/molecule/default/molecule.yml
 roles/steamdeck/molecule/default/verify.yml
 roles/steamdeck/tasks/_artwork_prune.yml
+roles/steamdeck/tasks/_helper_dir.yml
 roles/steamdeck/tasks/_resolve_defaults.yml
 roles/steamdeck/tasks/_shortcut_owners.yml
 roles/steamdeck/tasks/artwork.yml

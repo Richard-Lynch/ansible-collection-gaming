@@ -61,6 +61,7 @@
       - "{{ _dst_enabled_shards | map(attribute='name') | list | to_json }}"
       - "{{ _dst_mods | selectattr('enabled') | map(attribute='key') | list | to_json }}"
   register: _dst_status_raw
+  check_mode: false # a read: under --check the report must still have something to parse
   changed_when: false
 
 - name: Read the build Steam currently publishes for the server
@@ -75,6 +76,7 @@
     timeout: 15
   delegate_to: localhost
   register: _dst_public
+  check_mode: false # a read: under --check the report must still have something to parse
   failed_when: false
   changed_when: false
 
@@ -90,12 +92,14 @@
         --value,
       ]
   register: _dst_status_started
+  check_mode: false # a read: under --check the report must still have something to parse
   changed_when: false
 
 - name: Read the master start time as epoch seconds
   ansible.builtin.command:
     argv: [date, --date, "{{ _dst_status_started.stdout | trim }}", +%s]
   register: _dst_status_started_epoch
+  check_mode: false # a read: under --check the report must still have something to parse
   changed_when: false
   when:
     - _dst_obs.target_state == 'active'

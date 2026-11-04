@@ -15,3 +15,102 @@
       ansible.builtin.include_role:
         name: steamdeck
         tasks_from: setup_vars
+
+    # ---------------------------------------------------------------------------------------
+    # The settings entrypoints, run for real against a fixture HOME (entrypoint.yml says why
+    # nested): under --check they must report rather than fail at the parse after a skipped
+    # helper, --check with steamdeck_apply=true must still only report, and an apply with
+    # nothing to change must not restart Decky.
+    # ---------------------------------------------------------------------------------------
+    - name: Build the fixture HOME
+      ansible.builtin.file:
+        path: "{{ _home }}/{{ item }}"
+        state: directory
+        mode: "0755"
+      loop:
+        - homebrew/plugins/SDH-CssLoader
+        - homebrew/themes
+        - homebrew/settings/fixture-plugin
+        - .config/EmuDeck
+        - .steam/steam/userdata/1/config
+
+    - name: Write the fixture settings files
+      ansible.builtin.copy:
+        dest: "{{ _home }}/{{ item.path }}"
+        content: "{{ item.content }}"
+        mode: "0644"
+      loop:
+        - { path: .config/EmuDeck/settings.json, content: '{"overwriteConfigEmus": {"ra": true}}' }
+        - { path: homebrew/settings/fixture-plugin/settings.json, content: "{}" }
+      loop_control:
+        label: "{{ item.path }}"
+
+    - name: Write an empty shortcuts.vdf
+      # Binary VDF: the root map "shortcuts" with no entries, then the end-of-map bytes.
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -c
+          - "import sys; open(sys.argv[1], 'wb').write(b'\\x00shortcuts\\x00\\x08\\x08')"
+          - "{{ _home }}/.steam/steam/userdata/1/config/shortcuts.vdf"
+        creates: "{{ _home }}/.steam/steam/userdata/1/config/shortcuts.vdf"
+
+    - name: Run each entrypoint against the fixture
+      # ansible-playbook from PATH, as molecule itself runs it; the scenario's ANSIBLE_ROLES_PATH
+      # and ANSIBLE_COLLECTIONS_PATH reach it through the environment.
+      ansible.builtin.command:
+        argv: >-
+          {{ ['ansible-playbook'] + (['--check'] if item.check else [])
+             + ['-i', 'localhost,', '-c', 'local',
+                '-e', 'ansible_python_interpreter=' ~ ansible_playbook_python,
+                '-e', 'steamdeck_action=' ~ item.action,
+                '-e', 'steamdeck_apply=' ~ item.apply,
+                playbook_dir ~ '/entrypoint.yml'] }}
+      environment:
+        HOME: "{{ _home }}"
+        ANSIBLE_FORCE_COLOR: "0"
+        ANSIBLE_NOCOLOR: "1"
+      loop:
+        - { action: emudeck, check: true, apply: false }
+        - { action: decky_settings, check: true, apply: false }
+        - { action: css_themes, check: true, apply: false }
+        - { action: shortcuts, check: true, apply: false }
+        - { action: emudeck, check: true, apply: true }
+        - { action: decky_settings, check: true, apply: true }
+        - { action: css_themes, check: true, apply: true }
+        - { action: shortcuts, check: true, apply: true }
+        # A real apply with nothing to change: no theme declared, one absent theme to remove.
+        - { action: css_themes, check: false, apply: true }
+      loop_control:
+        label: "{{ item.action }} check={{ item.check }} apply={{ item.apply }}"
+      register: _entry
+      changed_when: false
+      failed_when: false
+
+    - name: Look at the files the --check runs must not have written
+      ansible.builtin.stat:
+        path: "{{ _home }}/{{ item }}"
+        checksum_algorithm: sha256
+      loop:
+        - .config/EmuDeck/settings.json
+        - homebrew/settings/fixture-plugin/settings.json
+      register: _entry_files
+
+    - name: Hand the results to verify.yml
+      # set_fact does not cross molecule's converge/verify playbook boundary; a file does.
+      ansible.builtin.copy:
+        dest: "{{ _home }}-results.json"
+        mode: "0644"
+        content: >-
+          {{ {
+               'runs': _entry.results | map(attribute='item')
+                       | zip(_entry.results | map(attribute='rc'),
+                             _entry.results | map(attribute='stdout_lines'))
+                       | map('list') | list,
+               'files': _entry_files.results | map(attribute='stat.checksum') | list,
+             } | to_json }}
+      # The scenario's own record, rewritten by every run (idempotence re-runs this play).
+      changed_when: false
+
+  vars:
+    _home: /tmp/molecule-steamdeck-home

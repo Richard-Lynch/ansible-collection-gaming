@@ -1,0 +1,27 @@
+# Run by converge.yml as a NESTED `ansible-playbook --check`, with dst_apply=true and a cluster
+# description that differs from the converged one. Only a real --check sets ansible_check_mode, so
+# this is the one way to prove that --check wins over dst_apply: converge.yml then requires that
+# the write WOULD change cluster.ini and that the file on disk did NOT change.
+---
+- name: Write the cluster files under --check with dst_apply=true
+  hosts: localhost
+  gather_facts: true
+
+  tasks:
+    - name: Resolve the cluster
+      ansible.builtin.include_role:
+        name: service_dst_server
+        tasks_from: setup_vars
+
+    - name: Write the cluster files (the role's real config.yml)
+      ansible.builtin.include_role:
+        name: service_dst_server
+        tasks_from: config
+
+    - name: Record what the run reports about cluster.ini
+      # check_mode: false so the record exists after a --check run; it is the scenario's own file.
+      ansible.builtin.copy:
+        dest: "{{ check_result_file }}"
+        mode: "0644"
+        content: "{{ {'cluster_ini_would_change': _dst_w_cluster is changed} | to_json }}"
+      check_mode: false

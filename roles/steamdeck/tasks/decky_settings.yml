@@ -31,11 +31,16 @@
       rather than on the command line.
     quiet: true
 
+- name: Ensure the helper directory exists
+  ansible.builtin.include_tasks: _helper_dir.yml
+
 - name: Install the settings helper
   ansible.builtin.copy:
     src: decky_plugin_settings.py
     dest: "{{ steamdeck_helper_dir }}/decky_plugin_settings.py"
     mode: "0755"
+  # The role's own tool in its own directory, needed by the report under --check too.
+  check_mode: false
 
 - name: Report what would change
   ansible.builtin.command:
@@ -50,6 +55,7 @@
   loop_control:
     label: "{{ item.key }}"
   register: _sd_ds_plan
+  check_mode: false # a read: under --check the report must still have something to parse
   changed_when: false
   failed_when: false
 
@@ -58,7 +64,7 @@
     msg: >-
       {{ item.item.key }}:
       {{ (item.stdout[item.stdout.find('{') :] | from_json).changes | default({}) }}
-      {{ '' if (steamdeck_apply | bool) else '(report only)' }}
+      {{ '' if (_sd_write | bool) else '(report only: --check)' if (steamdeck_apply | bool) else '(report only)' }}
   loop: "{{ _sd_ds_plan.results }}"
   loop_control:
     label: "{{ item.item.key }}"
@@ -69,7 +75,7 @@
     state: stopped
   become: true
   when:
-    - steamdeck_apply | bool
+    - _sd_write | bool
     - _sd_ds_changes | length > 0
   vars:
     _sd_ds_changes: >-
@@ -91,14 +97,14 @@
     label: "{{ item.key }}"
   register: _sd_ds_apply
   changed_when: (_sd_ds_apply.stdout[_sd_ds_apply.stdout.find('{') :] | from_json).changed | bool
-  when: steamdeck_apply | bool
+  when: _sd_write | bool
 
 - name: Start Decky again
   ansible.builtin.systemd_service:
     name: plugin_loader
     state: started
   become: true
-  when: steamdeck_apply | bool
+  when: _sd_write | bool
 
 - name: Read the settings back
   # From the files, not from the helper's own report — and after Decky has restarted, since a
@@ -116,7 +122,7 @@
     label: "{{ item.key }}"
   register: _sd_ds_after
   changed_when: false
-  when: steamdeck_apply | bool
+  when: _sd_write | bool
 
 - name: Assert every setting stuck
   # An empty `changes` map on a re-read means the file matches what was asked for. A non-empty
@@ -131,9 +137,9 @@
   loop: "{{ _sd_ds_after.results | default([]) }}"
   loop_control:
     label: "{{ item.item.key }}"
-  when: steamdeck_apply | bool
+  when: _sd_write | bool
 
 - name: Report
   ansible.builtin.debug:
     msg: "Settings enforced and verified after a Decky restart."
-  when: steamdeck_apply | bool
+  when: _sd_write | bool
