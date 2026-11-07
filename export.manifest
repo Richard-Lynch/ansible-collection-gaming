@@ -10,6 +10,7 @@
 .python-version
 CHANGELOG.md
 LICENSE
+Makefile
 README.md
 ci/affected-scenarios.sh
 configured_roles.txt
@@ -28,6 +29,7 @@ plugins/filter/dst_mods_setup.yml
 plugins/filter/to_dst_ini.yml
 plugins/filter/to_dst_lua.yml
 renovate.json
+requirements.yml
 roles/decky_plugin/README.md
 roles/decky_plugin/defaults/main.yml
 roles/decky_plugin/defaults/verify.yml
